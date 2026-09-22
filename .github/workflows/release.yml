@@ -1,0 +1,297 @@
+name: Release
+
+# Builds the things people install -- a Windows installer, an Android APK, a .deb and an .rpm -- from the
+# application repositories, and publishes them here. This repository is where releases live and what the
+# in-app updater watches; it holds no application code of its own.
+#
+# jpackage cannot cross-build. It reads the JDK it is running on and produces a package for that machine
+# and no other, which is why there is a job per platform rather than a matrix over formats. The desktop
+# packages each carry their own copy of Chromium for the sign-in window, so they are large and slow to
+# build; that is the cost of the application working on a machine with nothing installed on it.
+#
+# The application repositories are private, so checking them out needs a token that can read them: the
+# job's own token sees only this repository. NOCTORIUM_CHECKOUT_TOKEN is a fine-grained personal access
+# token with read access to Noctorium-Base, Noctorium-Desktop and Noctorium-Mobile. Once they are public
+# the job's own token is enough and the secret can go.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without the leading v (e.g. 1.2.3)'
+        required: true
+        default: '0.4.0'
+      desktop_ref:
+        description: 'Noctorium-Desktop branch, tag or commit to build'
+        required: false
+        default: 'main'
+      mobile_ref:
+        description: 'Noctorium-Mobile branch, tag or commit to build'
+        required: false
+        default: 'main'
+
+permissions:
+  contents: write
+
+env:
+  # The tag drives the version everywhere: the installers, the APK's versionName, and the release itself.
+  # A manual run has to say what it is building instead.
+  APP_VERSION: ${{ inputs.version || github.ref_name }}
+  DESKTOP_REF: ${{ inputs.desktop_ref || 'main' }}
+  MOBILE_REF: ${{ inputs.mobile_ref || 'main' }}
+
+jobs:
+  # Nothing is packaged until the tests pass. Twenty minutes of packaging on a commit that does not work
+  # is twenty minutes wasted, and a release that quietly went out broken is worse. The desktop's test task
+  # runs the core's tests as well, since the core is a subproject of it.
+  verify:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Desktop
+          ref: ${{ env.DESKTOP_REF }}
+          submodules: true
+          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew test --stacktrace
+
+  windows:
+    name: Windows installer
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Desktop
+          ref: ${{ env.DESKTOP_REF }}
+          submodules: true
+          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Msi and Exe are both produced: the .exe is what most people expect to double click, the .msi is
+      # what an administrator deploying it will ask for.
+      # mpv and yt-dlp are fetched here and packaged inside the installer, so a fresh install can play
+      # something without downloading anything first. The token is only to avoid the anonymous API rate
+      # limit that every build on a shared runner shares.
+      - name: Package
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./gradlew packageMsi packageExe -PappVersion="${APP_VERSION#v}" --stacktrace
+
+      - name: Name the files after the version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${APP_VERSION#v}"
+          mkdir -p out
+          # jpackage names these from packageName and its own version, which is not always the tag, so
+          # everything is renamed once here and the release job can simply upload what it finds.
+          for f in build/compose/binaries/main/msi/*.msi; do
+            cp "$f" "out/Noctorium-${version}-windows-x64.msi"
+          done
+          for f in build/compose/binaries/main/exe/*.exe; do
+            cp "$f" "out/Noctorium-${version}-windows-x64-setup.exe"
+          done
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+          if-no-files-found: error
+
+  linux:
+    name: Debian and Fedora packages
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Desktop
+          ref: ${{ env.DESKTOP_REF }}
+          submodules: true
+          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+
+      # jpackage shells out to these. Without rpm it does not warn and skip -- it fails the task, which is
+      # the right behaviour but an obscure failure if you have not met it before.
+      - name: Install the packaging tools
+        # xdg-utils and desktop-file-utils are for the package's own post-install hook, not for building:
+        # jpackage writes one that registers the .desktop entry, and on a runner without them dpkg fails
+        # the install with exit status 3 while the package itself is perfectly good.
+        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm xdg-utils desktop-file-utils shared-mime-info
+
+      - name: Package
+        run: ./gradlew packageDeb packageRpm -PappVersion="${APP_VERSION#v}" --stacktrace
+
+      - name: Name the files after the version
+        run: |
+          set -euo pipefail
+          version="${APP_VERSION#v}"
+          mkdir -p out
+          for f in build/compose/binaries/main/deb/*.deb; do
+            cp "$f" "out/noctorium_${version}_amd64.deb"
+          done
+          for f in build/compose/binaries/main/rpm/*.rpm; do
+            cp "$f" "out/noctorium-${version}.x86_64.rpm"
+          done
+          ls -la out
+
+      # A package that installs is the claim being made, so it is made here rather than by whoever
+      # downloads it. dpkg is run for real; rpm is only queried, because installing a Fedora package on
+      # Ubuntu proves nothing about Fedora and breaks the runner's own package database trying.
+      - name: Check the packages are well formed
+        run: |
+          set -euo pipefail
+          # A headless runner has no menu directories, and jpackage's post-install script registers the
+          # desktop entry into them -- it stops with "No writable system menu directory found" and dpkg
+          # reports a failed install for a package that is perfectly good. Any real desktop has these; the
+          # runner is made to look like one so the check below tests the case that actually matters.
+          sudo mkdir -p /usr/share/applications /usr/share/desktop-directories
+          sudo dpkg --install out/*.deb
+          test -x /opt/noctorium/bin/Noctorium || { echo "the deb did not put the binary where it said"; exit 1; }
+          sudo dpkg --remove noctorium
+          rpm --query --package --info out/*.rpm
+          rpm --query --package --list out/*.rpm | grep -q 'bin/Noctorium'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+          if-no-files-found: error
+
+  android:
+    name: Android APK
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Mobile
+          ref: ${{ env.MOBILE_REF }}
+          submodules: true
+          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Written to a file rather than passed as a value: a keystore is binary, and a secret interpolated
+      # into a command line is a secret in a process listing. Absent secrets are not an error -- the build
+      # falls back to the debug key, and the step below says so plainly.
+      - name: Restore the signing key, if there is one
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/noctorium.jks"
+            echo "path=$RUNNER_TEMP/noctorium.jks" >> "$GITHUB_OUTPUT"
+            echo "Signing with the release key."
+          else
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret. The APK will be signed with the debug key: installable for testing, but it cannot be updated later by a properly signed build."
+          fi
+
+      - name: Build the release APK
+        env:
+          NOCTORIUM_KEYSTORE: ${{ steps.signing.outputs.path }}
+          NOCTORIUM_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          NOCTORIUM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          NOCTORIUM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease -PappVersion="${APP_VERSION#v}" --stacktrace
+
+      # An unsigned APK cannot be installed by anyone, and it is not obvious from the file that it is
+      # unsigned. Better to fail the release than to publish one.
+      - name: Check it is actually signed
+        run: |
+          set -euo pipefail
+          apk=$(ls build/outputs/apk/release/*.apk)
+          # One version, chosen. The runner carries several build-tools and the bare glob hands the second
+          # path to the first as if it were a command, which apksigner rejects with a message about the
+          # first one -- confusing enough to send you looking in the wrong place.
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs "$apk"
+
+      - name: Name the file after the version
+        run: |
+          set -euo pipefail
+          version="${APP_VERSION#v}"
+          mkdir -p out
+          cp build/outputs/apk/release/*.apk "out/Noctorium-${version}.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: [windows, linux, android]
+    runs-on: ubuntu-latest
+    # A manual run builds and keeps the artifacts; only a tag publishes a release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Gather everything into one folder
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release
+          # Generated from inside the folder rather than stripping the path off afterwards. The sed that
+          # used to do that left three spaces where coreutils writes two, which the application's own
+          # parser did not care about and `sha256sum --check` refused outright -- so anybody verifying the
+          # release by hand got a failure that reads exactly like tampering.
+          ( cd release && sha256sum -- * ) > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          # The claim is that these verify. Made here, where it costs seconds, rather than discovered by
+          # whoever downloads them.
+          ( cd release && sha256sum --check --strict ../SHA256SUMS.txt )
+          cp SHA256SUMS.txt release/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          draft: true
+          generate_release_notes: false
+          body: |
+            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`.
+
+            | Platform | File |
+            | --- | --- |
+            | Windows | `Noctorium-*-windows-x64-setup.exe`, or the `.msi` for deployment |
+            | Debian, Ubuntu, Mint | `noctorium_*_amd64.deb` |
+            | Fedora, RHEL, openSUSE | `noctorium-*.x86_64.rpm` |
+            | Android | `Noctorium-*.apk` |
+
+            The desktop packages carry their own Java runtime and their own copy of Chromium for the
+            sign-in window, which is why they are large: nothing needs installing first. The Windows
+            packages carry mpv and yt-dlp as well.
+
+            `SHA256SUMS.txt` lists the checksum of every file above.
