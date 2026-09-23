@@ -5,14 +5,16 @@ allprojects {
     }
 }
 
-// Flutter's template puts every module's build directory under the project root rather than inside the
-// module, so `flutter clean` has one place to empty.
-rootProject.buildDir = "../build"
+// Every module's build directory goes under the project root rather than inside the module, which is
+// where the flutter tool looks for the APK it just built. Written with the layout API rather than the
+// `buildDir` property Gradle has deprecated.
+def sharedBuildDir = rootProject.layout.buildDirectory.dir("../../build").get()
+rootProject.layout.buildDirectory.value(sharedBuildDir)
 subprojects {
-    project.buildDir = "${rootProject.buildDir}/${project.name}"
+    project.layout.buildDirectory.value(sharedBuildDir.dir(project.name))
     project.evaluationDependsOn(":app")
 }
 
 tasks.register("clean", Delete) {
-    delete rootProject.buildDir
+    delete rootProject.layout.buildDirectory
 }

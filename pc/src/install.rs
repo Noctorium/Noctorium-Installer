@@ -24,12 +24,10 @@ pub fn detect() -> Option<Installer> {
     if cfg!(windows) {
         return Some(Installer::WindowsSetup);
     }
-    for (tool, installer) in [("apt-get", Installer::Apt), ("dnf", Installer::Dnf)] {
-        if on_path(tool) {
-            return Some(installer);
-        }
-    }
-    None
+    [("apt-get", Installer::Apt), ("dnf", Installer::Dnf)]
+        .into_iter()
+        .find(|(tool, _)| on_path(tool))
+        .map(|(_, installer)| installer)
 }
 
 fn on_path(tool: &str) -> bool {
@@ -109,12 +107,7 @@ pub fn escalation() -> Option<&'static str> {
     if already_root {
         return None;
     }
-    for tool in ["pkexec", "sudo"] {
-        if on_path(tool) {
-            return Some(tool);
-        }
-    }
-    None
+    ["pkexec", "sudo"].into_iter().find(|tool| on_path(tool))
 }
 
 /// Runs the install and waits for it.
