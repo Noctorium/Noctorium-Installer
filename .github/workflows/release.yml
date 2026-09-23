@@ -9,10 +9,17 @@ name: Release
 # packages each carry their own copy of Chromium for the sign-in window, so they are large and slow to
 # build; that is the cost of the application working on a machine with nothing installed on it.
 #
-# The application repositories are private, so checking them out needs a token that can read them: the
-# job's own token sees only this repository. NOCTORIUM_CHECKOUT_TOKEN is a fine-grained personal access
-# token with read access to Noctorium-Base, Noctorium-Desktop and Noctorium-Mobile. Once they are public
-# the job's own token is enough and the secret can go.
+# How the private repositories are read
+# -------------------------------------
+# A job's own token can see this repository and nothing else, so every checkout of an application
+# repository uses a read-only deploy key instead. There are three, one per repository, each stored here
+# as a secret: NOCTORIUM_DESKTOP_KEY, NOCTORIUM_MOBILE_KEY and NOCTORIUM_BASE_KEY.
+#
+# The core is checked out by hand rather than as a submodule, because a submodule fetch would reach for
+# the same credential as the repository that contains it and a deploy key only ever opens one repository.
+# It is checked out at exactly the commit the application's submodule pins -- `git rev-parse HEAD:base` --
+# so a release is still built against the core its authors chose, not against whatever the core's main
+# branch happens to be that morning.
 on:
   push:
     tags: ['v*']
@@ -38,8 +45,10 @@ env:
   # The tag drives the version everywhere: the installers, the APK's versionName, and the release itself.
   # A manual run has to say what it is building instead.
   APP_VERSION: ${{ inputs.version || github.ref_name }}
-  DESKTOP_REF: ${{ inputs.desktop_ref || 'main' }}
-  MOBILE_REF: ${{ inputs.mobile_ref || 'main' }}
+  # A tag push builds the same tag in the application repositories, so a release is reproducible from
+  # three tags that agree. A manual run builds whatever branch or commit it was given.
+  DESKTOP_REF: ${{ inputs.desktop_ref || github.ref_name }}
+  MOBILE_REF: ${{ inputs.mobile_ref || github.ref_name }}
 
 jobs:
   # Nothing is packaged until the tests pass. Twenty minutes of packaging on a commit that does not work
@@ -54,8 +63,16 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Desktop
           ref: ${{ env.DESKTOP_REF }}
-          submodules: true
-          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+          ssh-key: ${{ secrets.NOCTORIUM_DESKTOP_KEY }}
+      - name: Which core this commit is built against
+        id: core
+        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Base
+          ref: ${{ steps.core.outputs.sha }}
+          path: base
+          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -73,8 +90,17 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Desktop
           ref: ${{ env.DESKTOP_REF }}
-          submodules: true
-          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+          ssh-key: ${{ secrets.NOCTORIUM_DESKTOP_KEY }}
+      - name: Which core this commit is built against
+        id: core
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Base
+          ref: ${{ steps.core.outputs.sha }}
+          path: base
+          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -124,8 +150,16 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Desktop
           ref: ${{ env.DESKTOP_REF }}
-          submodules: true
-          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+          ssh-key: ${{ secrets.NOCTORIUM_DESKTOP_KEY }}
+      - name: Which core this commit is built against
+        id: core
+        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Base
+          ref: ${{ steps.core.outputs.sha }}
+          path: base
+          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -189,8 +223,16 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Mobile
           ref: ${{ env.MOBILE_REF }}
-          submodules: true
-          token: ${{ secrets.NOCTORIUM_CHECKOUT_TOKEN || github.token }}
+          ssh-key: ${{ secrets.NOCTORIUM_MOBILE_KEY }}
+      - name: Which core this commit is built against
+        id: core
+        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Base
+          ref: ${{ steps.core.outputs.sha }}
+          path: base
+          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

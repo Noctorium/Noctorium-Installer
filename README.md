@@ -55,9 +55,23 @@ and no release is created.
 
 | Secret | What it is |
 | --- | --- |
-| `NOCTORIUM_CHECKOUT_TOKEN` | A fine-grained personal access token with **Contents: read** on Noctorium-Base, Noctorium-Desktop and Noctorium-Mobile. Needed only while those repositories are private: the job's own token can see nothing but this repository. |
+| `NOCTORIUM_DESKTOP_KEY`, `NOCTORIUM_MOBILE_KEY`, `NOCTORIUM_BASE_KEY` | Read-only deploy keys, one per application repository. A job's own token can see this repository and nothing else, so every checkout of an application repository uses one of these instead. |
 | `ANDROID_KEYSTORE_BASE64` | The release keystore, base64-encoded. |
 | `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | What opens it. Without these the APK is signed with the debug key and the log says so. |
+
+Each key is an ed25519 pair whose public half sits on one repository as a **read-only** deploy key and
+whose private half is the secret here. They read one repository each and can write to none. Noctorium-Base
+carries the same key as `NOCTORIUM_BASE_KEY` in Noctorium-Desktop and Noctorium-Mobile, so their own CI can
+read the core too.
+
+To replace one: `ssh-keygen -t ed25519 -N "" -f key`, add `key.pub` to the repository's deploy keys as
+read-only, `gh secret set <NAME> -R Noctorium/<repo> < key`, delete the old deploy key, delete the local
+files. Deploy keys have to be enabled for the organisation (Settings → Deploy keys) for any of this to
+work; they are off by default.
+
+None of this is needed once the repositories are public — a job's own token can read a public repository,
+and the workflows fall back to nothing because the deploy key simply is not used. Switching then means
+putting `submodules: true` back on each checkout and deleting the second one.
 
 ## Updating
 
