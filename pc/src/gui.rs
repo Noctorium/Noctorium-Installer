@@ -264,16 +264,21 @@ impl eframe::App for Gui {
                         ui.add(
                             egui::ProgressBar::new(fraction)
                                 .desired_width(320.0)
-                                .fill(ACCENT)
-                                .text(
-                                    egui::RichText::new(format!(
-                                        "{:.0} MB of {:.0} MB",
-                                        *done as f64 / 1_048_576.0,
-                                        *total as f64 / 1_048_576.0
-                                    ))
-                                    .size(12.0)
-                                    .color(ON_ACCENT),
-                                ),
+                                .fill(ACCENT),
+                        );
+                        ui.add_space(8.0);
+                        // Under the bar rather than inside it. A progress bar draws its text from its
+                        // left edge across the whole width, not within the part that is filled, so text
+                        // chosen to read against the accent turns invisible the moment it runs off the
+                        // end of it -- which is most of the download.
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.0} MB of {:.0} MB",
+                                *done as f64 / 1_048_576.0,
+                                *total as f64 / 1_048_576.0
+                            ))
+                            .size(12.0)
+                            .color(SUBTEXT),
                         );
                     }
 
