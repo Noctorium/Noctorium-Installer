@@ -103,28 +103,34 @@ impl Gui {
         let mark = ctx.load_texture("noctorium-mark", image, egui::TextureOptions::LINEAR);
 
         let (sender, events) = channel();
-
-        // Asked for straight away rather than behind a button: knowing what there is to install is the
-        // first thing anybody wants, and it changes nothing on the machine.
-        let asking = sender.clone();
-        let repaint = ctx.clone();
-        std::thread::spawn(move || {
-            let message = match flow::discover() {
-                Ok(plan) => Message::Found(Box::new(plan)),
-                Err(problem) => Message::Finished(Err(problem)),
-            };
-            let _ = asking.send(message);
-            repaint.request_repaint();
-        });
-
-        Self {
+        let mut gui = Self {
             stage: Stage::Looking,
             events,
             sender,
             mark,
             needs_password: false,
             installed,
-        }
+        };
+        gui.look(ctx);
+        gui
+    }
+
+    /// Asks GitHub what there is to install.
+    ///
+    /// Done on opening rather than behind a button, because knowing what is on offer is the first thing
+    /// anybody wants and asking changes nothing on the machine. Also what a failed attempt goes back to.
+    fn look(&mut self, ctx: &egui::Context) {
+        self.stage = Stage::Looking;
+        let sender = self.sender.clone();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let message = match flow::discover() {
+                Ok(plan) => Message::Found(Box::new(plan)),
+                Err(problem) => Message::Finished(Err(problem)),
+            };
+            let _ = sender.send(message);
+            repaint.request_repaint();
+        });
     }
 
     /// Starts the download and the install on a thread of their own.
@@ -181,6 +187,7 @@ impl eframe::App for Gui {
         // What to do once the frame is drawn, decided while drawing it: starting a thread in the middle
         // of the closure that is holding the interface would need the borrow checker's permission.
         let mut start: Option<Plan> = None;
+        let mut retry = false;
         let mut close = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -319,9 +326,20 @@ impl eframe::App for Gui {
                                 ui.label(egui::RichText::new(why.as_str()).size(12.0).color(SUBTEXT));
                             });
                         ui.add_space(14.0);
+                        // Most of what goes wrong here is a network that was briefly not there, so the
+                        // obvious answer is to ask again rather than to start the program again.
+                        let again = egui::Button::new(
+                            egui::RichText::new("Try again").size(15.0).color(ON_ACCENT),
+                        )
+                        .fill(ACCENT)
+                        .min_size(egui::vec2(150.0, 36.0));
+                        if ui.add(again).clicked() {
+                            retry = true;
+                        }
+                        ui.add_space(8.0);
                         let button =
-                            egui::Button::new(egui::RichText::new("Close").size(15.0).color(TEXT))
-                                .min_size(egui::vec2(150.0, 36.0));
+                            egui::Button::new(egui::RichText::new("Close").size(13.0).color(SUBTEXT))
+                                .min_size(egui::vec2(150.0, 30.0));
                         if ui.add(button).clicked() {
                             close = true;
                         }
@@ -332,6 +350,9 @@ impl eframe::App for Gui {
 
         if let Some(plan) = start {
             self.begin(ctx, plan);
+        }
+        if retry {
+            self.look(ctx);
         }
         if close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
