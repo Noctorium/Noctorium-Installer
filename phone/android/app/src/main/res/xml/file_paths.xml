@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one folder the system package installer is allowed to read: where the downloaded APK is put.
+  Nothing else in this application's files is exposed.
+-->
+<paths>
+    <files-path name="downloads" path="downloads/" />
+</paths>

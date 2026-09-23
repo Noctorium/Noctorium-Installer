@@ -289,9 +289,81 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  # The installers this repository holds the source of: the small programs somebody downloads once, which
+  # then fetch whatever the latest release is. They are attached to every release so there is always a
+  # current one to hand, and they are built from this repository, so they need no key.
+  pc-installer:
+    name: PC installer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: noctorium-installer
+            published: noctorium-installer-linux-x64
+          - os: windows-latest
+            binary: noctorium-installer.exe
+            published: Noctorium-Installer-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pc
+      - run: cargo test
+        working-directory: pc
+      - run: cargo build --release
+        working-directory: pc
+      - name: Name it after the platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "pc/target/release/${{ matrix.binary }}" "out/${{ matrix.published }}"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: out/*
+          if-no-files-found: error
+
+  phone-installer:
+    name: Phone installer
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+        working-directory: phone
+      - run: flutter test
+        working-directory: phone
+      - run: flutter build apk --release
+        working-directory: phone
+      - name: Name it after what it is
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp phone/build/app/outputs/flutter-apk/app-release.apk out/Noctorium-Installer-android.apk
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-android
+          path: out/*
+          if-no-files-found: error
+
   release:
     name: Publish the release
-    needs: [windows, linux, android]
+    needs: [windows, linux, android, pc-installer, phone-installer]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -331,6 +403,10 @@ jobs:
             | Debian, Ubuntu, Mint | `noctorium_*_amd64.deb` |
             | Fedora, RHEL, openSUSE | `noctorium-*.x86_64.rpm` |
             | Android | `Noctorium-*.apk` |
+
+            Or take an installer instead, which fetches whichever release is latest at the time and
+            checks it before it runs it: `Noctorium-Installer-windows-x64.exe`,
+            `noctorium-installer-linux-x64`, `Noctorium-Installer-android.apk`.
 
             The desktop packages carry their own Java runtime and their own copy of Chromium for the
             sign-in window, which is why they are large: nothing needs installing first. The Windows

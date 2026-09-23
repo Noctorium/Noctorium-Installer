@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Noctorium's N, inside the 66dp safe zone of the 108dp canvas.
+
+  Drawn as a path rather than shipped as bitmaps at five densities, so there is one file to change and it
+  stays sharp on any screen. Two stems and a diagonal, each a closed shape wound the same way so the
+  overlaps fill as one letter under the default non-zero rule; the same letter the desktop icon draws.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M35,31 H44.5 V77 H35 Z M63.5,31 H73 V77 H63.5 Z M35,31 H45.5 L73,67.5 V77 H62.5 L35,40.5 Z" />
+</vector>

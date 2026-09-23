@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  An adaptive icon, which is what Android needs to mask the mark into whatever shape the launcher uses —
+  circle, squircle, teardrop.
+
+  The foreground is the artwork, drawn inside the 66dp safe zone of the 108dp canvas, which is the area
+  every mask is guaranteed to leave alone: at full bleed a circular mask would take the wing tips. The
+  background is the same near-black the artwork sits on, so the two meet invisibly and the icon reads as
+  one picture whatever shape the launcher cuts it into.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <!--
+      A themed icon has to be one flat silhouette the launcher can tint, which a picture cannot be, so
+      this layer stays the letter mark. It is only ever seen by somebody who has turned themed icons on.
+    -->
+    <monochrome android:drawable="@drawable/ic_launcher_mono" />
+</adaptive-icon>

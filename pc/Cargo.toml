@@ -1,0 +1,25 @@
+[package]
+name = "noctorium-installer"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Fetches the latest Noctorium release from GitHub and installs it"
+license = "Proprietary"
+publish = false
+
+[dependencies]
+# Blocking HTTP with rustls, and small: this program is a download and a checksum, and an async runtime
+# would be most of the binary. Redirects are followed, which GitHub's asset URLs rely on.
+ureq = "2"
+# Read only. The release JSON is a handful of fields and deriving structs for it would cost a proc-macro
+# dependency to save a dozen lines.
+serde_json = "1"
+sha2 = "0.10"
+
+[profile.release]
+# The whole point is a small file somebody downloads before they have anything else.
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

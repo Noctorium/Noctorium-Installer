@@ -1,11 +1,40 @@
 # Noctorium releases
 
 This is where Noctorium is published: the Windows installer, the Debian and Fedora packages and the
-Android APK, with a `SHA256SUMS.txt` beside them. The applications check here for updates. There is no
-application code in this repository — the desktop is
-[Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop), the phone is
-[Noctorium-Mobile](https://github.com/Noctorium/Noctorium-Mobile), and what they share is
+Android APK, with a `SHA256SUMS.txt` beside them. The applications check here for updates. The player
+itself is elsewhere — the desktop is [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop),
+the phone is [Noctorium-Mobile](https://github.com/Noctorium/Noctorium-Mobile), and what they share is
 [Noctorium-Base](https://github.com/Noctorium/Noctorium-Base).
+
+What *is* here, besides the release pipeline, is the pair of small installers.
+
+## The installers
+
+Two programs that do one thing: ask GitHub what the latest release is, fetch the file for the machine
+they are on, check it against the checksum published beside it, and hand it to whatever installs software
+there. They are what somebody downloads once. Everything after that is the application's own updater.
+
+| | Where | Built from |
+| --- | --- | --- |
+| `Noctorium-Installer-windows-x64.exe`, `noctorium-installer-linux-x64` | Windows, Debian and Fedora | `pc/`, in Rust |
+| `Noctorium-Installer-android.apk` | Android | `phone/`, in Dart with Flutter |
+
+Neither installs anything itself. The PC one runs the Windows installer, or hands the package to `apt` or
+`dnf` through `pkexec` so dependencies are resolved rather than merely reported. The phone one hands the
+APK to Android's own package installer, which shows its own screen and asks again — and the first time
+sends you to a settings page to allow it at all.
+
+Both refuse to install anything they cannot check. A release with no `SHA256SUMS.txt`, or a download that
+does not match the checksum published for it, is deleted rather than run. Both skip their own files in a
+release, so the installer never offers to install itself.
+
+Both read `GITHUB_TOKEN` from the environment if it is set, which is the only way either of them can see a
+release while this repository is private.
+
+```bash
+cd pc    && cargo test && cargo build --release    # the PC installer
+cd phone && flutter test && flutter build apk      # the phone installer
+```
 
 ## Which file
 

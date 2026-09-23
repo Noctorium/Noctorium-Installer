@@ -1,0 +1,7 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # A warning that CI ignores is a warning nobody reads.
+    unused_import: error
+    unused_local_variable: error

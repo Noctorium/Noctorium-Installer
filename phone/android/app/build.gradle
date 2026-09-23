@@ -1,0 +1,49 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // Must come after the two above: it reads what they configured.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+android {
+    namespace = "app.noctorium.installer"
+    compileSdk = 35
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = "11"
+    }
+
+    defaultConfig {
+        // Its own identity: this is a separate application from Noctorium, and installing one must never
+        // look to Android like replacing the other.
+        applicationId = "app.noctorium.installer"
+        // The same floor Noctorium sets, which is also what an adaptive-icon-only launcher icon needs.
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            // Signed with the debug key unless a release build says otherwise. This application installs
+            // another one and is never updated in place, so there is nothing for a stable key to protect.
+            signingConfig = signingConfigs.debug
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}
+
+dependencies {
+    // FileProvider: Android will not open an APK from another application's files without one.
+    implementation "androidx.core:core-ktx:1.15.0"
+}

@@ -1,0 +1,28 @@
+// The shape Flutter's Android template has taken since 3.16: the SDK is found through local.properties,
+// which the flutter tool writes, and the plugin loader brings in whatever packages pubspec asked for.
+pluginManagement {
+    def flutterSdkPath = {
+        def properties = new Properties()
+        file("local.properties").withInputStream { properties.load(it) }
+        def flutterSdkPath = properties.getProperty("flutter.sdk")
+        assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+        return flutterSdkPath
+    }()
+
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+    // The same versions Noctorium itself is built with, so one Gradle cache serves both.
+    id "com.android.application" version "8.7.3" apply false
+    id "org.jetbrains.kotlin.android" version "2.1.21" apply false
+}
+
+include ":app"
