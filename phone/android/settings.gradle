@@ -20,11 +20,12 @@ pluginManagement {
 
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
-    // Newer than the 8.7.3 Noctorium itself is built with, because Flutter's Gradle plugin refuses
-    // anything below 8.11.1 and says so. Nothing is shared between the two builds but the Gradle
-    // distribution, so they are free to differ.
+    // Both newer than Noctorium's own 8.7.3 and 2.1.21, because Flutter's Gradle plugin refuses
+    // anything below these and says which. Nothing is shared between the two builds but the Gradle
+    // distribution, so they are free to differ -- and this application is a hundred lines of Dart and
+    // one Kotlin file, which is not where a toolchain upgrade is worth arguing about.
     id "com.android.application" version "8.11.1" apply false
-    id "org.jetbrains.kotlin.android" version "2.1.21" apply false
+    id "org.jetbrains.kotlin.android" version "2.2.20" apply false
 }
 
 include ":app"
