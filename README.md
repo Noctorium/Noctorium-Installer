@@ -28,8 +28,8 @@ Both refuse to install anything they cannot check. A release with no `SHA256SUMS
 does not match the checksum published for it, is deleted rather than run. Both skip their own files in a
 release, so the installer never offers to install itself.
 
-Both read `GITHUB_TOKEN` from the environment if it is set, which is the only way either of them can see a
-release while this repository is private.
+Both read `GITHUB_TOKEN` from the environment if it is set. This repository is public, so neither needs it
+to see a release; it only raises the rate limit an address shares with everyone else behind it.
 
 ```bash
 cd pc    && cargo test && cargo build --release    # the PC installer
@@ -102,8 +102,7 @@ default.
 
 Noctorium asks GitHub for `/releases/latest` of this repository once at launch and offers what it finds.
 That endpoint **ignores drafts and pre-releases**, so nothing is offered to anybody until a draft is
-published — and it answers 404 for a private repository, so the updater is dormant until this repository
-is public. Downloads are checked against `SHA256SUMS.txt` from the same release before anything is
+published. Downloads are checked against `SHA256SUMS.txt` from the same release before anything is
 installed; a release without one is refused with a link to the page instead.
 
 | Installed as | What happens |
