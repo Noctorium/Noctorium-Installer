@@ -9,17 +9,14 @@ name: Release
 # packages each carry their own copy of Chromium for the sign-in window, so they are large and slow to
 # build; that is the cost of the application working on a machine with nothing installed on it.
 #
-# How the private repositories are read
-# -------------------------------------
-# A job's own token can see this repository and nothing else, so every checkout of an application
-# repository uses a read-only deploy key instead. There are three, one per repository, each stored here
-# as a secret: NOCTORIUM_DESKTOP_KEY, NOCTORIUM_MOBILE_KEY and NOCTORIUM_BASE_KEY.
+# Every application repository is public, so the job's own token reads all of them and no key is needed.
+# Each checkout brings its base/ submodule, which pins the commit of the core that application is built
+# against -- so a release is built against the core its authors chose rather than whatever the core's
+# main branch happens to be that morning.
 #
-# The core is checked out by hand rather than as a submodule, because a submodule fetch would reach for
-# the same credential as the repository that contains it and a deploy key only ever opens one repository.
-# It is checked out at exactly the commit the application's submodule pins -- `git rev-parse HEAD:base` --
-# so a release is still built against the core its authors chose, not against whatever the core's main
-# branch happens to be that morning.
+# While these repositories were private this could not work: a job's token sees only the repository it
+# runs in, and a submodule fetch reaches for that same token. Three read-only deploy keys stood in for it
+# until they went public, and were removed the day they did.
 on:
   push:
     tags: ['v*']
@@ -63,16 +60,7 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Desktop
           ref: ${{ env.DESKTOP_REF }}
-          ssh-key: ${{ secrets.NOCTORIUM_DESKTOP_KEY }}
-      - name: Which core this commit is built against
-        id: core
-        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: Noctorium/Noctorium-Base
-          ref: ${{ steps.core.outputs.sha }}
-          path: base
-          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
+          submodules: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -90,17 +78,7 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Desktop
           ref: ${{ env.DESKTOP_REF }}
-          ssh-key: ${{ secrets.NOCTORIUM_DESKTOP_KEY }}
-      - name: Which core this commit is built against
-        id: core
-        shell: bash
-        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: Noctorium/Noctorium-Base
-          ref: ${{ steps.core.outputs.sha }}
-          path: base
-          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
+          submodules: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -150,16 +128,7 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Desktop
           ref: ${{ env.DESKTOP_REF }}
-          ssh-key: ${{ secrets.NOCTORIUM_DESKTOP_KEY }}
-      - name: Which core this commit is built against
-        id: core
-        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: Noctorium/Noctorium-Base
-          ref: ${{ steps.core.outputs.sha }}
-          path: base
-          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
+          submodules: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -223,16 +192,7 @@ jobs:
         with:
           repository: Noctorium/Noctorium-Mobile
           ref: ${{ env.MOBILE_REF }}
-          ssh-key: ${{ secrets.NOCTORIUM_MOBILE_KEY }}
-      - name: Which core this commit is built against
-        id: core
-        run: echo "sha=$(git rev-parse HEAD:base)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
-        with:
-          repository: Noctorium/Noctorium-Base
-          ref: ${{ steps.core.outputs.sha }}
-          path: base
-          ssh-key: ${{ secrets.NOCTORIUM_BASE_KEY }}
+          submodules: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

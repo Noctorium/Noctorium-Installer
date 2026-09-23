@@ -84,23 +84,19 @@ and no release is created.
 
 | Secret | What it is |
 | --- | --- |
-| `NOCTORIUM_DESKTOP_KEY`, `NOCTORIUM_MOBILE_KEY`, `NOCTORIUM_BASE_KEY` | Read-only deploy keys, one per application repository. A job's own token can see this repository and nothing else, so every checkout of an application repository uses one of these instead. |
 | `ANDROID_KEYSTORE_BASE64` | The release keystore, base64-encoded. |
 | `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | What opens it. Without these the APK is signed with the debug key and the log says so. |
 
-Each key is an ed25519 pair whose public half sits on one repository as a **read-only** deploy key and
-whose private half is the secret here. They read one repository each and can write to none. Noctorium-Base
-carries the same key as `NOCTORIUM_BASE_KEY` in Noctorium-Desktop and Noctorium-Mobile, so their own CI can
-read the core too.
+Nothing else. Every application repository is public, so the job's own token checks each of them out along
+with the `base/` submodule that pins its core.
 
-To replace one: `ssh-keygen -t ed25519 -N "" -f key`, add `key.pub` to the repository's deploy keys as
-read-only, `gh secret set <NAME> -R Noctorium/<repo> < key`, delete the old deploy key, delete the local
-files. Deploy keys have to be enabled for the organisation (Settings → Deploy keys) for any of this to
-work; they are off by default.
-
-None of this is needed once the repositories are public — a job's own token can read a public repository,
-and the workflows fall back to nothing because the deploy key simply is not used. Switching then means
-putting `submodules: true` back on each checkout and deleting the second one.
+While they were private that was impossible — a job's token sees only the repository it runs in, and a
+submodule fetch reaches for that same token — and three read-only deploy keys stood in for it. They were
+removed the day the repositories went public. If any of them ever goes private again, the keys come back:
+one ed25519 pair per repository, public half added as a read-only deploy key, private half stored here as
+a secret, and each checkout given `ssh-key:` and an explicit second checkout of the core at
+`git rev-parse HEAD:base`. Deploy keys also have to be enabled for the organisation, which they are not by
+default.
 
 ## Updating
 
