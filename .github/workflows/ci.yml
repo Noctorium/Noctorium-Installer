@@ -16,7 +16,7 @@ jobs:
   pc:
     name: PC installer (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       # One failing platform should not hide the other's result.
       fail-fast: false
@@ -33,6 +33,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: pc
+
+      # The window is drawn with OpenGL through X11 or Wayland, and those headers are not on the runner.
+      # Windows has its own in the SDK, so this is the Linux leg only.
+      - name: Libraries the window is built against
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - name: Formatting
         run: cargo fmt --check
       - name: Lints

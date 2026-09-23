@@ -31,9 +31,22 @@ release, so the installer never offers to install itself.
 Both read `GITHUB_TOKEN` from the environment if it is set. This repository is public, so neither needs it
 to see a release; it only raises the rate limit an address shares with everyone else behind it.
 
+Both put up a window. The PC one shows what it found, waits to be told to go ahead, and draws a progress
+bar; it is the first thing anybody sees of Noctorium, usually before they have any reason to trust it, and
+a console full of scrolling text is not what somebody who has just downloaded a music player expects. The
+console version is still there behind `--cli`, and is what runs by itself on a machine with no display —
+over ssh, say, where `DISPLAY` and `WAYLAND_DISPLAY` are both unset.
+
 ```bash
 cd pc    && cargo test && cargo build --release    # the PC installer
 cd phone && flutter test && flutter build apk      # the phone installer
+```
+
+Building the PC one on Linux needs the headers its window is drawn with, which a desktop usually has
+already:
+
+```bash
+sudo apt-get install libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
 ```
 
 ## Which file

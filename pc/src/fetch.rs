@@ -56,17 +56,21 @@ pub fn text(url: &str) -> Result<String, Problem> {
         .map_err(|e| Problem::Network(e.to_string()))
 }
 
-/// Downloads [url] into [directory] under [name], reporting progress, and returns where it landed
-/// together with what it hashes to.
+/// Downloads [url] into [directory] under [name] and returns where it landed together with what it
+/// hashes to, calling [progress] with the bytes written so far and the total expected.
 ///
 /// The hash is computed while the bytes go past rather than by reading the file again afterwards: these
 /// are three hundred megabyte files and reading them twice on a slow disk is a minute nobody needs to
 /// wait.
+///
+/// Progress is reported rather than printed so that whatever is watching -- a console line or a bar in a
+/// window -- decides how to show it.
 pub fn download(
     url: &str,
     directory: &Path,
     name: &str,
     expected_size: u64,
+    mut progress: impl FnMut(u64, u64),
 ) -> Result<(PathBuf, String), Problem> {
     let destination = directory.join(name);
     let mut file = std::fs::File::create(&destination).map_err(|e| {
@@ -98,15 +102,14 @@ pub fn download(
         })?;
         written += read as u64;
 
-        // Once a megabyte rather than once a buffer: a progress line that redraws two thousand times a
-        // second is its own slowdown.
+        // Once a megabyte rather than once a buffer: whoever is watching does not need telling two
+        // thousand times a second, and a progress line that redraws that often is its own slowdown.
         if written - last_report >= 1_048_576 {
             last_report = written;
-            report(written, total);
+            progress(written, total);
         }
     }
-    report(written, total);
-    println!();
+    progress(written, total);
 
     file.flush().map_err(|e| {
         Problem::Local(format!(
@@ -115,21 +118,6 @@ pub fn download(
         ))
     })?;
     Ok((destination, hex(&hasher.finalize())))
-}
-
-fn report(written: u64, total: u64) {
-    let done = written as f64 / 1_048_576.0;
-    if total > 0 {
-        let percent = (written as f64 / total as f64 * 100.0).min(100.0);
-        print!(
-            "\r  {:.0}% of {:.0} MB",
-            percent,
-            total as f64 / 1_048_576.0
-        );
-    } else {
-        print!("\r  {done:.0} MB");
-    }
-    let _ = std::io::stdout().flush();
 }
 
 fn hex(bytes: &[u8]) -> String {

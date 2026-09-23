@@ -1,8 +1,9 @@
 [package]
 name = "noctorium-installer"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
-rust-version = "1.74"
+# eframe's floor, and the oldest toolchain this builds on.
+rust-version = "1.85"
 description = "Fetches the latest Noctorium release from GitHub and installs it"
 license = "Proprietary"
 publish = false
@@ -15,6 +16,23 @@ ureq = "2"
 # dependency to save a dozen lines.
 serde_json = "1"
 sha2 = "0.10"
+# The window. Immediate mode, so the whole interface is a function of the progress reported so far and
+# there is no widget tree to keep in step with a download running on another thread.
+#
+# Trimmed to what is used: its own fonts, OpenGL, both display servers on Linux, and the accessibility
+# tree, because somebody using a screen reader has to be able to install a music player too. Left out is
+# the web backend and the persistence that would write a window position into somebody's config
+# directory -- this program runs once and should leave nothing behind.
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }
+
+# Only to put `--cli` output somewhere visible when a window program is run from a command prompt.
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
+
+[build-dependencies]
+# Decodes the mark at build time, so the binary carries the pixels rather than a PNG decoder it would use
+# exactly once.
+png = "0.18.1"
 
 [profile.release]
 # The whole point is a small file somebody downloads before they have anything else.

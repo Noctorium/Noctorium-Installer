@@ -255,7 +255,7 @@ jobs:
   pc-installer:
     name: PC installer
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -272,6 +272,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: pc
+      # The window is drawn with OpenGL through X11 or Wayland; Windows has its own in the SDK.
+      - name: Libraries the window is built against
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - run: cargo test
         working-directory: pc
       - run: cargo build --release
