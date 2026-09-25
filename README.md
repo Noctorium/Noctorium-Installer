@@ -79,15 +79,23 @@ will not replace it with a release-signed one.
 
 ## Cutting a release
 
+The same tag goes on all three repositories, applications first:
+
 ```bash
-git tag v1.2.3
-git push origin v1.2.3
+for repo in Noctorium-Desktop Noctorium-Mobile Noctorium-Installer; do
+  git -C ../$repo tag v1.2.3 && git -C ../$repo push origin v1.2.3
+done
 ```
 
-That is the whole of it. `.github/workflows/release.yml` checks out Noctorium-Desktop and Noctorium-Mobile
-at `main`, each with the Noctorium-Base commit it pins, runs the tests, packages each platform on its own
+The one on this repository is what starts the build, so it goes last. The other two are what the build
+checks out: `.github/workflows/release.yml` takes Noctorium-Desktop and Noctorium-Mobile **at that same
+tag**, each with the Noctorium-Base commit it pins, runs the tests, packages each platform on its own
 runner, and opens a **draft** release with everything attached and the checksums beside it. It is a draft
 on purpose — read it, check the files are the sizes you expect, write the notes, and publish it yourself.
+
+Tagging only this repository fails in the first minute, and the message does not say why: the checkout of
+an application looks for a ref that is not there and reports nothing but `git failed with exit code 1`.
+This paragraph exists because that is exactly how 0.4.4 began.
 
 To build without releasing, run the workflow by hand from the Actions tab and give it a version, and
 optionally a branch or commit of each application. The artifacts are attached to the run for two weeks
