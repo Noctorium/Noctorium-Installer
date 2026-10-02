@@ -145,7 +145,8 @@ jobs:
           chown -R builder build
           # --nodeps: the dependencies are what it runs with, not what it is built with, and installing
           # them is the check below.
-          (cd build && sudo -u builder makepkg --nodeps --noconfirm)
+          (cd build && sudo -u builder env PACKAGER='Noctorium <noctorium@users.noreply.github.com>' \
+            makepkg --nodeps --noconfirm)
           mv build/noctorium-"${pkgver}"-1-x86_64.pkg.tar.zst "out/noctorium-${version}-1-x86_64.pkg.tar.zst"
           ls -la out
 
