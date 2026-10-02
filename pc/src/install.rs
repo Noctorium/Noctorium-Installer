@@ -215,6 +215,8 @@ pub enum Action {
         into: PathBuf,
         link: Option<PathBuf>,
     },
+    /// The Flatpak taken out if it is installed already, keeping its data, so a bundle can go in.
+    ClearFlatpak { id: String },
 }
 
 /// What installing [file] with [method] takes, as steps that can be shown before any of them is run.
@@ -268,8 +270,12 @@ pub fn actions_for(
         }],
         // A bundle carries the application but not the runtime it was built against, and Flatpak fetches
         // that from whichever remote has it -- so Flathub is added first if it is not there already,
-        // for this user only, which needs no password. --reinstall is what lets a newer bundle replace
-        // an older one: without it Flatpak refuses an application that is already installed.
+        // for this user only, which needs no password.
+        //
+        // Then any copy already installed is taken out. Flatpak will not install a bundle over an
+        // application it already has -- "already installed", and --reinstall does not apply to bundles
+        // -- so replacing an older one means removing it first. Its data in ~/.var/app stays; only
+        // --delete-data would touch that.
         Method::Flatpak => vec![
             Action::Run {
                 program: "flatpak".into(),
@@ -283,9 +289,12 @@ pub fn actions_for(
                 .map(String::from)
                 .to_vec(),
             },
+            Action::ClearFlatpak {
+                id: FLATPAK_ID.into(),
+            },
             Action::Run {
                 program: "flatpak".into(),
-                args: ["install", "--user", "-y", "--reinstall", "--bundle", &path]
+                args: ["install", "--user", "-y", "--bundle", &path]
                     .map(String::from)
                     .to_vec(),
             },
@@ -356,6 +365,9 @@ impl Action {
                 "unpack it into {} and add that folder to your PATH",
                 places.show(into)
             ),
+            Action::ClearFlatpak { id } => format!(
+                "flatpak uninstall --user -y {id}, if an older one is installed (its settings stay)"
+            ),
         }
     }
 
@@ -374,8 +386,30 @@ impl Action {
                 into,
                 link,
             } => install_cli(archive, into, link.as_deref()),
+            Action::ClearFlatpak { id } => clear_flatpak(id),
         }
     }
+}
+
+/// Uninstalls the Flatpak for this user if it is there, and does nothing if it is not.
+///
+/// Asked first rather than uninstalled blind, because "not installed" comes back as a failure, and a
+/// first install would otherwise begin with an error message about something that was never there.
+fn clear_flatpak(id: &str) -> Result<(), Problem> {
+    let installed = Command::new("flatpak")
+        .args(["info", "--user", id])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !installed {
+        return Ok(());
+    }
+    run(
+        "flatpak",
+        &["uninstall", "--user", "-y", id].map(String::from),
+    )
 }
 
 /// A command line as a shell would need it typed: quoted where it has to be, and only there.
@@ -852,7 +886,7 @@ mod tests {
 
     /// A Flatpak is for this user, so nothing is escalated even when a tool to escalate with was found.
     #[test]
-    fn a_flatpak_adds_flathub_for_its_runtime_and_then_installs_the_bundle_for_this_user() {
+    fn a_flatpak_adds_flathub_for_its_runtime_clears_an_older_copy_and_installs_the_bundle() {
         let actions = actions_for(
             Method::Flatpak,
             Path::new("/tmp/Noctorium-1.0.0-x86_64.flatpak"),
@@ -875,13 +909,15 @@ mod tests {
                     .map(String::from)
                     .to_vec(),
                 },
+                Action::ClearFlatpak {
+                    id: "app.noctorium.Noctorium".into(),
+                },
                 Action::Run {
                     program: "flatpak".into(),
                     args: [
                         "install",
                         "--user",
                         "-y",
-                        "--reinstall",
                         "--bundle",
                         "/tmp/Noctorium-1.0.0-x86_64.flatpak"
                     ]

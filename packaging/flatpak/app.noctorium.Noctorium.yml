@@ -150,6 +150,13 @@ modules:
       - -Dvapoursynth=disabled
       - -Dlcms2=disabled
       - -Djpeg=disabled
+    # mpv's own menu entry, icons and listing would only confuse a software centre: it is Noctorium's
+    # player here, not an application of its own.
+    cleanup:
+      - /etc
+      - /share/applications
+      - /share/icons
+      - /share/metainfo
     sources:
       - type: archive
         url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz

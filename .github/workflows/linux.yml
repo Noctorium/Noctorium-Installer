@@ -319,16 +319,24 @@ jobs:
             "$RUNNER_TEMP/repo" "out/Noctorium-${version}-x86_64.flatpak" app.noctorium.Noctorium
           ls -la out
 
-      # Installed the way the installer installs it -- twice, because the second time is an upgrade and
-      # that is the case that refuses without --reinstall -- and then mpv inside it is asked to play
-      # something over https, which exercises the runtime's FFmpeg, its TLS and the audio output at once.
+      # Installed the way the installer installs it, step for step -- twice, because the second time is
+      # the one that replaces a copy already there, which Flatpak refuses to do by itself for a bundle --
+      # and then mpv inside it is asked to play something over https, which exercises the runtime's
+      # FFmpeg, its TLS and the audio output at once.
       - name: Check the Flatpak installs and its mpv plays
         run: |
           set -euo pipefail
           bundle=$(ls out/*.flatpak)
-          flatpak install --user -y --reinstall --bundle "$bundle"
-          flatpak install --user -y --reinstall --bundle "$bundle"
-          flatpak info --user app.noctorium.Noctorium
+          id=app.noctorium.Noctorium
+          for time in first second; do
+            echo "Installing for the $time time"
+            flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+            if flatpak info --user "$id" > /dev/null 2>&1; then
+              flatpak uninstall --user -y "$id"
+            fi
+            flatpak install --user -y --bundle "$bundle"
+          done
+          flatpak info --user "$id"
           run() { dbus-run-session -- flatpak run --user "$@"; }
           run --command=sh app.noctorium.Noctorium -c \
             'test -x /app/noctorium/bin/Noctorium && test "$NOCTORIUM_MPV_PATH" = /app/bin/mpv && echo "launcher and mpv are where they should be"'
