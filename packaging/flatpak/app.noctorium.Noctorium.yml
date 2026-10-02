@@ -71,6 +71,8 @@ modules:
   - name: libplacebo
     buildsystem: meson
     config-opts:
+      # Meson would choose lib64, which neither pkg-config nor the loader looks in here.
+      - --libdir=lib
       - -Dvulkan=disabled
       - -Dopengl=disabled
       - -Dd3d11=disabled
@@ -95,6 +97,7 @@ modules:
   - name: mpv
     buildsystem: meson
     config-opts:
+      - --libdir=lib
       - -Dlibmpv=false
       - -Dcplayer=true
       - -Dbuild-date=false

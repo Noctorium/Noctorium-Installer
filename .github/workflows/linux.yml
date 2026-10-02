@@ -178,9 +178,10 @@ jobs:
           jar=$(find /opt/noctorium/lib/app -name 'jcef-natives-linux-amd64*.jar' | head -1)
           if [ -n "$jar" ]; then
             # The jar holds one archive of the whole Chromium build, which jcefmaven unpacks at first use.
+            # Its libjcef links libjawt, which the Java runtime provides, so the runtime stays on the path.
             inner=$(bsdtar -tf "$jar" | grep '\.tar\.gz$' | head -1)
             bsdtar -xOf "$jar" "$inner" | tar -xz -C "$cef"
-            chromium=$(find "$cef" -name '*.so*' -type f -exec env LD_LIBRARY_PATH="$cef" ldd {} \; 2>/dev/null | grep 'not found' | sort -u || true)
+            chromium=$(find "$cef" -name '*.so*' -type f -exec env LD_LIBRARY_PATH="$cef:$LD_LIBRARY_PATH" ldd {} \; 2>/dev/null | grep 'not found' | sort -u || true)
             missing=$(printf '%s\n%s\n' "$missing" "$chromium" | sed '/^$/d')
           else
             echo "::warning::No jcef-natives jar found in the application; Chromium's libraries were not checked."
