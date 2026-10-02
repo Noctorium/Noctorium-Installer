@@ -35,18 +35,32 @@ fn send(url: &str) -> Result<ureq::Response, Problem> {
     }
 }
 
-/// The body of the latest release, as GitHub's API gives it.
+/// The body of a release, as GitHub's API gives it: the latest, or the one tagged [tag].
 ///
 /// `/releases/latest` ignores drafts and pre-releases, which is the behaviour wanted here: a draft is a
-/// release its author is still looking at.
-pub fn latest_release() -> Result<String, Problem> {
-    let url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        repository()
-    );
-    send(&url)?
-        .into_string()
-        .map_err(|e| Problem::Network(e.to_string()))
+/// release its author is still looking at. A tag asked for by name can be a pre-release -- somebody who
+/// types `--version 1.2.0-beta.1` means it -- but never a draft, which GitHub does not serve by tag.
+pub fn release(tag: Option<&str>) -> Result<String, Problem> {
+    let url = match tag {
+        None => format!(
+            "https://api.github.com/repos/{}/releases/latest",
+            repository()
+        ),
+        Some(tag) => format!(
+            "https://api.github.com/repos/{}/releases/tags/{tag}",
+            repository()
+        ),
+    };
+    match send(&url) {
+        // The repository exists -- it answered for the latest release a moment ago, or would -- so a 404
+        // for one tag means that tag, and saying "no release at all" would send somebody the wrong way.
+        Err(Problem::NotFound) if tag.is_some() => {
+            Err(Problem::NoSuchRelease(tag.unwrap_or_default().to_string()))
+        }
+        other => other?
+            .into_string()
+            .map_err(|e| Problem::Network(e.to_string())),
+    }
 }
 
 /// A small file, read whole. Used for the checksums.

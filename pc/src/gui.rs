@@ -7,9 +7,9 @@
 //! The colours are Noctorium's own Dusk theme, so the thing that installs the player looks like the
 //! player. Pure black would be the Night theme and is too hard an edge for a small window.
 
-use crate::flow::{self, Plan, Step};
-use crate::github::Problem;
 use eframe::egui;
+use noctorium_installer::flow::{self, Format, Found, Offer, Options, Plan, Products, Step};
+use noctorium_installer::github::Problem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -36,7 +36,8 @@ pub fn run() -> Result<bool, String> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([470.0, 350.0])
+            // Taller on Linux, which has a row for choosing the format.
+            .with_inner_size([470.0, if cfg!(windows) { 350.0 } else { 410.0 }])
             .with_resizable(false)
             .with_title("Install Noctorium")
             .with_icon(egui::IconData {
@@ -59,7 +60,7 @@ pub fn run() -> Result<bool, String> {
 
 /// What the working thread has to say for itself.
 enum Message {
-    Found(Box<Plan>),
+    Found(Box<Found>),
     Progress(Step),
     Finished(Result<(), Problem>),
 }
@@ -67,11 +68,53 @@ enum Message {
 /// Where the install has got to, which is the whole of what the window draws.
 enum Stage {
     Looking,
-    Ready(Box<Plan>),
+    Ready(Box<Choosing>),
     Downloading { done: u64, total: u64 },
     Installing { needs_password: bool },
     Done,
     Failed(String),
+}
+
+/// What was found, how it is to be installed, and what that comes to.
+///
+/// The plan is remade from what was found whenever the format changes, which asks GitHub nothing: the
+/// release and its checksums were fetched once, when the window opened.
+struct Choosing {
+    found: Found,
+    /// The ways this machine can install it. One on Windows; on Linux the distribution's package, the
+    /// AppImage and the Flatpak, each saying whether this release has it.
+    offers: Vec<Offer>,
+    chosen: usize,
+    plan: Result<Plan, String>,
+}
+
+impl Choosing {
+    fn new(found: Found) -> Choosing {
+        let offers = flow::offers(&found);
+        let chosen = offers.iter().position(|o| o.recommended).unwrap_or(0);
+        let mut choosing = Choosing {
+            found,
+            offers,
+            chosen,
+            plan: Err(String::new()),
+        };
+        choosing.replan();
+        choosing
+    }
+
+    fn replan(&mut self) {
+        let format = self
+            .offers
+            .get(self.chosen)
+            .map(|offer| Format::of(offer.method))
+            .unwrap_or(Format::Auto);
+        let options = Options {
+            products: Products::Desktop,
+            format,
+            ..Options::default()
+        };
+        self.plan = flow::plan(&self.found, options).map_err(|problem| problem.to_string());
+    }
 }
 
 struct Gui {
@@ -124,8 +167,8 @@ impl Gui {
         let sender = self.sender.clone();
         let repaint = ctx.clone();
         std::thread::spawn(move || {
-            let message = match flow::discover() {
-                Ok(plan) => Message::Found(Box::new(plan)),
+            let message = match flow::look(None) {
+                Ok(found) => Message::Found(Box::new(found)),
                 Err(problem) => Message::Finished(Err(problem)),
             };
             let _ = sender.send(message);
@@ -141,7 +184,7 @@ impl Gui {
         self.needs_password = plan.needs_password();
         self.stage = Stage::Downloading {
             done: 0,
-            total: plan.asset.size,
+            total: plan.items.first().map(|i| i.asset.size).unwrap_or(0),
         };
         let sender = self.sender.clone();
         let repaint = ctx.clone();
@@ -158,13 +201,14 @@ impl Gui {
     fn take_messages(&mut self) {
         while let Ok(message) = self.events.try_recv() {
             match message {
-                Message::Found(plan) => self.stage = Stage::Ready(plan),
-                Message::Progress(Step::Downloading { done, total }) => {
+                Message::Found(found) => self.stage = Stage::Ready(Box::new(Choosing::new(*found))),
+                Message::Progress(Step::Downloading { done, total, .. }) => {
                     self.stage = Stage::Downloading { done, total }
                 }
                 // The gap between this and the install starting is a few milliseconds, so it is said as
                 // part of what comes next rather than flashed up on its own.
-                Message::Progress(Step::Verified) => {}
+                Message::Progress(Step::Verified { .. }) => {}
+                Message::Progress(Step::Installed { .. }) => {}
                 Message::Progress(Step::Installing { .. }) => {
                     self.stage = Stage::Installing {
                         needs_password: self.needs_password,
@@ -187,6 +231,7 @@ impl eframe::App for Gui {
         // What to do once the frame is drawn, decided while drawing it: starting a thread in the middle
         // of the closure that is holding the interface would need the borrow checker's permission.
         let mut start: Option<Plan> = None;
+        let mut pick: Option<usize> = None;
         let mut retry = false;
         let mut close = false;
 
@@ -212,19 +257,73 @@ impl eframe::App for Gui {
                         );
                     }
 
-                    Stage::Ready(plan) => {
+                    Stage::Ready(choosing) => {
                         ui.label(
-                            egui::RichText::new(format!("Version {}", plan.version()))
+                            egui::RichText::new(format!("Version {}", choosing.found.version()))
                                 .size(17.0)
                                 .color(TEXT),
                         );
                         ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new(format!("{:.0} MB to download", plan.megabytes()))
+                        if let Ok(plan) = &choosing.plan {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:.0} MB to download",
+                                    plan.megabytes()
+                                ))
                                 .size(13.0)
                                 .color(SUBTEXT),
-                        );
-                        ui.add_space(18.0);
+                            );
+                        }
+
+                        // Only where there is a choice to make, which is Linux. The ones this release
+                        // does not carry, or this machine cannot use, are listed but cannot be picked,
+                        // so nobody is left wondering where the Flatpak went.
+                        if choosing.offers.len() > 1 {
+                            ui.add_space(10.0);
+                            let current = choosing
+                                .offers
+                                .get(choosing.chosen)
+                                .map(|o| o.method.describe())
+                                .unwrap_or("");
+                            egui::ComboBox::from_id_salt("format")
+                                .width(260.0)
+                                .selected_text(current)
+                                .show_ui(ui, |ui| {
+                                    for (index, offer) in choosing.offers.iter().enumerate() {
+                                        let label = match &offer.unavailable {
+                                            None if offer.recommended => {
+                                                format!("{}  (recommended)", offer.method.describe())
+                                            }
+                                            None => offer.method.describe().to_string(),
+                                            Some(_) => format!(
+                                                "{}  (not available)",
+                                                offer.method.describe()
+                                            ),
+                                        };
+                                        let entry =
+                                            egui::Button::selectable(index == choosing.chosen, label);
+                                        let entry = ui
+                                            .add_enabled(offer.unavailable.is_none(), entry)
+                                            .on_disabled_hover_text(
+                                                offer.unavailable.clone().unwrap_or_default(),
+                                            );
+                                        if entry.clicked() {
+                                            pick = Some(index);
+                                        }
+                                    }
+                                });
+                            if let Some(offer) = choosing.offers.get(choosing.chosen) {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(offer.method.explain())
+                                        .size(11.0)
+                                        .color(SUBTEXT),
+                                );
+                            }
+                        }
+
+                        ui.add_space(16.0);
+                        let ready = choosing.plan.as_ref().ok();
                         let button = egui::Button::new(
                             egui::RichText::new("Install Noctorium")
                                 .size(16.0)
@@ -232,10 +331,20 @@ impl eframe::App for Gui {
                         )
                         .fill(ACCENT)
                         .min_size(egui::vec2(230.0, 40.0));
-                        if ui.add(button).clicked() {
-                            start = Some((**plan).clone());
+                        if ui.add_enabled(ready.is_some(), button).clicked() {
+                            start = ready.cloned();
                         }
                         ui.add_space(12.0);
+                        let Some(plan) = ready else {
+                            if let Err(why) = &choosing.plan {
+                                ui.label(egui::RichText::new(why.as_str()).size(11.0).color(SUBTEXT));
+                            }
+                            return;
+                        };
+                        for note in &plan.notes {
+                            ui.label(egui::RichText::new(note.as_str()).size(11.0).color(SUBTEXT));
+                            ui.add_space(2.0);
+                        }
                         ui.label(
                             egui::RichText::new(
                                 "It is checked against the checksum published with the release before anything is run.",
@@ -353,6 +462,10 @@ impl eframe::App for Gui {
             });
         });
 
+        if let (Some(index), Stage::Ready(choosing)) = (pick, &mut self.stage) {
+            choosing.chosen = index;
+            choosing.replan();
+        }
         if let Some(plan) = start {
             self.begin(ctx, plan);
         }

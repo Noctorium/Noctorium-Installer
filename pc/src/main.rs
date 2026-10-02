@@ -1,4 +1,4 @@
-//! Installs Noctorium on this machine.
+//! Installs Noctorium on this machine, in a window.
 //!
 //! One small program that does one thing: ask GitHub what the latest release is, download the file for
 //! this machine, check it against the checksum published beside it, and hand it to whatever installs
@@ -8,33 +8,33 @@
 //! It opens a window. That costs a few megabytes of toolkit on top of what is otherwise a download and a
 //! checksum -- but this is the first thing anybody sees of Noctorium, often before they have any reason
 //! to trust it, and a console window full of scrolling text is not what somebody who has just downloaded
-//! a music player is expecting. The console version is still here behind `--cli`, and is what runs on a
-//! machine with no display at all.
+//! a music player is expecting. The terminal version is `noctorium-installer-cli`, built from the same
+//! library; this one still falls back to it behind `--cli`, and on a machine with no display at all.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-mod console;
-mod fetch;
-mod flow;
-mod github;
 mod gui;
-mod install;
 
+use noctorium_installer::cli::{self, Launch};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
 Noctorium installer
 
-With no arguments it opens a window. On a machine with no display it explains itself in the terminal
-instead, which --cli also asks for directly.
+With no arguments it opens a window. On a machine with no display it installs in the terminal instead,
+without asking anything, which --cli also asks for directly. For menus, a dry run and the rest, use
+noctorium-installer-cli, which is this installer for a terminal.
 
-  --cli     install here in the terminal rather than in a window
+  --cli     install here in the terminal rather than in a window, taking the defaults
   --help    this
+
+  With --cli, the options of noctorium-installer-cli are understood too: --product, --format,
+  --version, --dry-run, --list, --no-color.
 
   GITHUB_TOKEN           raises GitHub's rate limit, and reads a repository that is not public
   NOCTORIUM_REPOSITORY   the repository to install from, as owner/name
 
 It exits 0 when Noctorium is installed and 1 when it is not, including when the window was closed
-without installing anything.
+without installing anything, and 2 when --cli was given options it could not understand.
 ";
 
 fn main() -> ExitCode {
@@ -47,7 +47,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if !said("--cli") && !said("--console") && there_is_a_display() {
+    let console = said("--cli") || said("--console");
+    if !console && there_is_a_display() {
         match gui::run() {
             Ok(true) => return ExitCode::SUCCESS,
             // The window was closed without Noctorium being installed -- either it failed, and the
@@ -63,17 +64,15 @@ fn main() -> ExitCode {
     }
 
     attach_console();
-    match console::run() {
-        Ok(()) => {
-            console::pause_if_double_clicked();
-            ExitCode::SUCCESS
-        }
-        Err(problem) => {
-            eprintln!("\n{problem}");
-            console::pause_if_double_clicked();
-            ExitCode::FAILURE
-        }
-    }
+    // Everything but the switch into the terminal is handed on, so `--cli --format appimage` works. With
+    // nothing else -- which is how this has always been run -- it installs with the defaults, as before.
+    let rest: Vec<String> = arguments
+        .into_iter()
+        .filter(|argument| argument != "--cli" && argument != "--console")
+        .collect();
+    let outcome = cli::main(&rest, Launch::Window);
+    pause_if_double_clicked();
+    outcome
 }
 
 /// Whether there is anything to put a window on.
@@ -103,3 +102,21 @@ fn attach_console() {
 
 #[cfg(not(windows))]
 fn attach_console() {}
+
+/// Holds the window open when there is nobody to read the output otherwise.
+///
+/// A console program started from Explorer gets its own window, which closes the instant it exits --
+/// taking the only explanation of what went wrong with it. Reached now only when the window could not be
+/// opened at all, which is the moment an explanation matters most.
+fn pause_if_double_clicked() {
+    if !cfg!(windows) || std::env::var_os("NOCTORIUM_NO_PAUSE").is_some() {
+        return;
+    }
+    // Arguments mean somebody typed this, and a terminal that was already open does not need holding.
+    if std::env::args().len() > 1 {
+        return;
+    }
+    println!("\nPress Enter to close.");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+}
