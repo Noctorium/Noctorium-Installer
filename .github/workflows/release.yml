@@ -28,13 +28,17 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.6.0'
+        default: '0.7.0'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
         default: 'main'
       mobile_ref:
         description: 'Noctorium-Mobile branch, tag or commit to build'
+        required: false
+        default: 'main'
+      cli_ref:
+        description: 'Noctorium-cli branch, tag or commit to build'
         required: false
         default: 'main'
 
@@ -49,6 +53,7 @@ env:
   # three tags that agree. A manual run builds whatever branch or commit it was given.
   DESKTOP_REF: ${{ inputs.desktop_ref || github.ref_name }}
   MOBILE_REF: ${{ inputs.mobile_ref || github.ref_name }}
+  CLI_REF: ${{ inputs.cli_ref || github.ref_name }}
 
 jobs:
   # Nothing is packaged until the tests pass. Twenty minutes of packaging on a commit that does not work
@@ -237,11 +242,56 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  # Noctorium CLI: the terminal player and `noctorium web`, from Noctorium-cli at the same tag, with the
+  # core its base/ submodule pins and the page its web/ submodule pins. One archive per system, each with
+  # its own Java runtime, so nothing has to be installed first.
+  cli:
+    name: Noctorium CLI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-cli
+          ref: ${{ env.CLI_REF }}
+          submodules: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test and package
+        shell: bash
+        run: ./gradlew test cliArchive -PappVersion="${APP_VERSION#v}" --stacktrace
+
+      - name: It runs, and says its version
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then out=$(build/package/noctorium-cli/noctorium.exe version); else out=$(build/package/noctorium-cli/bin/noctorium version); fi
+          echo "$out"
+          echo "$out" | grep -q "${APP_VERSION#v}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.os }}
+          path: build/dist/*
+
   release:
     name: Publish the release
     # linux is linux.yml: the .deb, the .rpm, the Arch package, the AppImage and the Flatpak, every one of
     # which has to succeed. pc-installer is both systems' window and terminal installers.
-    needs: [windows, linux, android, pc-installer, phone-installer]
+    needs: [windows, linux, android, cli, pc-installer, phone-installer]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -281,7 +331,7 @@ jobs:
           draft: true
           generate_release_notes: false
           body: |
-            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`.
+            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`, Noctorium-cli at `${{ env.CLI_REF }}`.
 
             | Platform | File |
             | --- | --- |
@@ -292,7 +342,7 @@ jobs:
             | Any Linux | `Noctorium-*-x86_64.AppImage`: mark it executable and run it |
             | Any Linux with Flatpak | `Noctorium-*-x86_64.flatpak`: `flatpak install --user --bundle` |
             | Android | `Noctorium-*.apk` |
-            | Noctorium CLI, the player in a terminal | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, when the release carries them |
+            | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz` |
 
             Or take an installer instead, which fetches whichever release is latest at the time and
             checks it before it runs it:

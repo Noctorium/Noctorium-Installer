@@ -31,13 +31,15 @@ finish-args:
   # Downloads, and music the listener already has.
   - --filesystem=xdg-music
   - --filesystem=xdg-download
-  # Discord's rich presence socket, where Discord itself is installed natively.
+  # Discord's rich presence socket: where Discord is installed natively, and where Discord is itself a
+  # Flatpak, which keeps its socket in a folder of its own.
   - --filesystem=xdg-run/discord-ipc-0
+  - --filesystem=xdg-run/app/com.discordapp.Discord:create
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.freedesktop.secrets
-  # Noctorium keeps settings, sign-ins and the unpacked Chromium in ~/.local/share/noctorium, which the
-  # sandbox cannot see. This gives it that path, kept in ~/.var/app/app.noctorium.Noctorium instead, so
-  # nothing written there is lost when the sandbox closes.
+  # From 0.7 Noctorium keeps its settings, sign-ins and the unpacked Chromium in the sandbox's own data
+  # folder, $XDG_DATA_HOME/noctorium. This keeps the path builds before it used, should one ever run here,
+  # in ~/.var/app/app.noctorium.Noctorium as well, so nothing written there is lost when the sandbox closes.
   - --persist=.local/share/noctorium
   # The mpv built below. The desktop reads this before looking anywhere else.
   - --env=NOCTORIUM_MPV_PATH=/app/bin/mpv
