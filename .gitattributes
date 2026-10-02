@@ -1,0 +1,4 @@
+# Shell scripts, desktop entries and manifests are read on Linux, where a carriage return is part of the
+# line: `#!/bin/sh\r` is not a shell. Kept as LF whatever the checkout's own settings.
+packaging/** text eol=lf
+*.sh text eol=lf

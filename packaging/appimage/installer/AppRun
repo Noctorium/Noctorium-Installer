@@ -1,0 +1,5 @@
+#!/bin/sh
+# The installer's AppImage: the same program as noctorium-installer-linux-x64, in a file a desktop will
+# run on a double click once it is marked executable.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/noctorium-installer" "$@"

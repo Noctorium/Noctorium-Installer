@@ -1,0 +1,91 @@
+# Maintainer: Noctorium <noctorium@users.noreply.github.com>
+#
+# Noctorium for Arch Linux and its relatives, from the application folder jpackage builds for the .deb and
+# the .rpm. Nothing is compiled here: the release workflow builds the application once, on Ubuntu, and
+# every Linux format is that same folder -- launcher, jars, Java runtime -- wrapped a different way. So
+# this is a repackaging, and namcap will say as much about the bundled runtime in /opt.
+#
+# The workflow lays the folder beside this file as noctorium-linux-app.tar.gz and sets pkgver before
+# running makepkg. By hand, the same two steps do it:
+#
+#   tar -C build/compose/binaries/main/app -czf noctorium-linux-app.tar.gz Noctorium
+#   sed -i "s/^pkgver=.*/pkgver=1.2.3/" PKGBUILD && makepkg
+
+pkgname=noctorium
+# Replaced by the workflow. A pre-release tag loses its hyphen, which pacman does not allow: v1.2.3-beta.1
+# becomes 1.2.3beta.1, and pacman's ordering puts that before 1.2.3, as it should.
+pkgver=0.6.0
+pkgrel=1
+pkgdesc='One music player for YouTube Music and SoundCloud'
+arch=('x86_64')
+url='https://github.com/Noctorium/Noctorium-Desktop'
+license=('GPL-3.0-only')
+# mpv plays everything; outside the Windows installer Noctorium uses the distribution's.
+#
+# The rest is what the application links against, read from what the .deb ends up depending on -- the
+# Java runtime's AWT and sound, and Skia's OpenGL and fontconfig -- plus what the embedded Chromium for
+# the sign-in window needs once it is unpacked, which no package scan sees because it arrives inside a
+# jar. The workflow installs the built package and runs ldd over all of it, so a name missing here fails
+# the build rather than somebody's first sign-in.
+depends=(
+  'mpv'
+  'alsa-lib'
+  'at-spi2-core'
+  'cairo'
+  'dbus'
+  'expat'
+  'fontconfig'
+  'freetype2'
+  'glib2'
+  'glibc'
+  'hicolor-icon-theme'
+  'libcups'
+  'libdrm'
+  'libglvnd'
+  'libx11'
+  'libxcb'
+  'libxcomposite'
+  'libxdamage'
+  'libxext'
+  'libxfixes'
+  'libxi'
+  'libxkbcommon'
+  'libxrandr'
+  'libxrender'
+  'libxtst'
+  'mesa'
+  'nspr'
+  'nss'
+  'pango'
+  'xdg-utils'
+  'zlib'
+)
+optdepends=(
+  'yt-dlp: a system copy, though Noctorium fetches and refreshes its own'
+)
+# The runtime and Chromium are shipped as their makers built them. Stripping them saves little and has
+# broken a JVM before; a debug package of somebody else's binaries helps nobody.
+options=('!strip' '!debug' '!lto')
+source=(
+  'noctorium-linux-app.tar.gz'
+  'noctorium.desktop'
+)
+# The application folder is built fresh by every run of the workflow, so it has no fixed checksum to pin;
+# the release's SHA256SUMS.txt is what vouches for the package made from it.
+sha256sums=(
+  'SKIP'
+  '372851af5690f369a9a96b022dd4cfa49fd3a6ba716a886729c2dc43f62e5699'
+)
+
+package() {
+  install -d "$pkgdir/opt"
+  cp -a "$srcdir/Noctorium" "$pkgdir/opt/noctorium"
+
+  # The jpackage launcher finds its jars and runtime from its own real path, so a link to it works.
+  install -d "$pkgdir/usr/bin"
+  ln -s /opt/noctorium/bin/Noctorium "$pkgdir/usr/bin/noctorium"
+
+  install -Dm644 "$srcdir/noctorium.desktop" "$pkgdir/usr/share/applications/noctorium.desktop"
+  install -Dm644 "$srcdir/Noctorium/lib/Noctorium.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/noctorium.png"
+}

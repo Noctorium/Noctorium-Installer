@@ -1,0 +1,177 @@
+# Noctorium as a Flatpak.
+#
+# The application itself is the folder jpackage builds for the .deb and the .rpm -- launcher, jars, its
+# own Java runtime -- unpacked into /app/noctorium as it is. Nothing of it is compiled here. What is
+# compiled is mpv, because Noctorium plays everything through it and a sandboxed program cannot reach the
+# host's: so mpv, and the two libraries it will not build without, are built against the runtime's own
+# FFmpeg, configured for audio and nothing else.
+#
+# The release workflow puts noctorium-linux-app.tar.gz beside this file and fills in the version in the
+# metainfo before building. By hand, after building the desktop:
+#
+#   tar -C build/compose/binaries/main/app -czf noctorium-linux-app.tar.gz Noctorium
+#   flatpak-builder --user --install-deps-from=flathub --repo=repo build app.noctorium.Noctorium.yml
+app-id: app.noctorium.Noctorium
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: noctorium
+
+finish-args:
+  # Streaming, and the Connect server the phone talks to.
+  - --share=network
+  # The window. AWT draws through X11 and has no Wayland backend, so on a Wayland desktop this is
+  # XWayland. fallback-x11 would withhold X11 exactly there and leave a program with nowhere to draw,
+  # which is why it is x11 outright; wayland is kept for mpv, should it ever be asked to open a window.
+  - --socket=x11
+  - --socket=wayland
+  - --share=ipc
+  - --device=dri
+  - --socket=pulseaudio
+  # Downloads, and music the listener already has.
+  - --filesystem=xdg-music
+  - --filesystem=xdg-download
+  # Discord's rich presence socket, where Discord itself is installed natively.
+  - --filesystem=xdg-run/discord-ipc-0
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+  # Noctorium keeps settings, sign-ins and the unpacked Chromium in ~/.local/share/noctorium, which the
+  # sandbox cannot see. This gives it that path, kept in ~/.var/app/app.noctorium.Noctorium instead, so
+  # nothing written there is lost when the sandbox closes.
+  - --persist=.local/share/noctorium
+  # The mpv built below. The desktop reads this before looking anywhere else.
+  - --env=NOCTORIUM_MPV_PATH=/app/bin/mpv
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - /share/doc
+  - /share/zsh
+  - /share/bash-completion
+  - /share/fish
+  - '*.la'
+  - '*.a'
+
+modules:
+  # Subtitles, which an audio player never shows -- but mpv will not build without it.
+  - name: libass
+    config-opts:
+      - --disable-static
+      # Hand-written assembly only speeds up rendering, and needs nasm, which the SDK does not have.
+      - --disable-asm
+    sources:
+      - type: archive
+        url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+        sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+
+  # mpv's video renderer, required since mpv 0.37. Built with no GPU backend at all: nothing here draws.
+  # From git rather than a tarball, because its build reads submodules -- Jinja for the shader templates,
+  # fast_float -- that a GitHub archive does not include.
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Dvulkan=disabled
+      - -Dopengl=disabled
+      - -Dd3d11=disabled
+      - -Dglslang=disabled
+      - -Dshaderc=disabled
+      - -Dlcms=disabled
+      - -Ddovi=disabled
+      - -Dlibdovi=disabled
+      - -Dunwind=disabled
+      - -Dxxhash=disabled
+      - -Ddemos=false
+      - -Dtests=false
+    sources:
+      - type: git
+        url: https://github.com/haasn/libplacebo.git
+        tag: v7.360.1
+        commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+
+  # The player. Audio out through PulseAudio -- which PipeWire answers for on most desktops -- and every
+  # video output, script engine and disc reader switched off, so what is built is what is used: a
+  # command-line player Noctorium drives over its IPC socket.
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=false
+      - -Dcplayer=true
+      - -Dbuild-date=false
+      - -Dmanpage-build=disabled
+      - -Dhtml-build=disabled
+      - -Dpdf-build=disabled
+      # Noctorium resolves streams with yt-dlp itself and starts mpv with --ytdl=no, so the Lua hook that
+      # would do it is not needed, and neither is JavaScript.
+      - -Dlua=disabled
+      - -Djavascript=disabled
+      - -Dcplugins=disabled
+      - -Dpulse=enabled
+      - -Dpipewire=auto
+      - -Dalsa=auto
+      - -Djack=disabled
+      - -Dopenal=disabled
+      - -Dsndio=disabled
+      - -Doss-audio=disabled
+      - -Dsdl2-audio=disabled
+      - -Dsdl2-video=disabled
+      - -Dsdl2-gamepad=disabled
+      - -Dx11=disabled
+      - -Dx11-clipboard=disabled
+      - -Dwayland=disabled
+      - -Dgl=disabled
+      - -Degl=disabled
+      - -Dplain-gl=disabled
+      - -Dvulkan=disabled
+      - -Ddrm=disabled
+      - -Dgbm=disabled
+      - -Ddmabuf-wayland=disabled
+      - -Dvaapi=disabled
+      - -Dvdpau=disabled
+      - -Dxv=disabled
+      - -Dcaca=disabled
+      - -Dsixel=disabled
+      - -Dshaderc=disabled
+      - -Dspirv-cross=disabled
+      - -Dcuda-hwaccel=disabled
+      - -Dcuda-interop=disabled
+      - -Dcdda=disabled
+      - -Ddvbin=disabled
+      - -Ddvdnav=disabled
+      - -Dlibbluray=disabled
+      - -Dlibarchive=disabled
+      - -Dlibavdevice=disabled
+      - -Duchardet=disabled
+      - -Drubberband=disabled
+      - -Dzimg=disabled
+      - -Dvapoursynth=disabled
+      - -Dlcms2=disabled
+      - -Djpeg=disabled
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+
+  - name: noctorium
+    buildsystem: simple
+    build-options:
+      # A Java runtime and Chromium, as their makers built them. Stripping them saves little and has
+      # broken a JVM before, and debug symbols for somebody else's binaries help nobody.
+      no-debuginfo: true
+      strip: false
+    sources:
+      - type: archive
+        path: noctorium-linux-app.tar.gz
+        dest: app
+      - type: file
+        path: noctorium.sh
+      - type: file
+        path: app.noctorium.Noctorium.desktop
+      - type: file
+        path: app.noctorium.Noctorium.metainfo.xml
+    build-commands:
+      - cp -a app /app/noctorium
+      - install -Dm755 noctorium.sh /app/bin/noctorium
+      - install -Dm644 app.noctorium.Noctorium.desktop /app/share/applications/app.noctorium.Noctorium.desktop
+      - install -Dm644 app.noctorium.Noctorium.metainfo.xml /app/share/metainfo/app.noctorium.Noctorium.metainfo.xml
+      - install -Dm644 app/lib/Noctorium.png /app/share/icons/hicolor/512x512/apps/app.noctorium.Noctorium.png

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centres show for Noctorium. The release workflow fills in the version and the date. -->
+<component type="desktop-application">
+  <id>app.noctorium.Noctorium</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Noctorium</name>
+  <summary>One music player for YouTube Music and SoundCloud</summary>
+  <developer id="app.noctorium">
+    <name>Noctorium</name>
+  </developer>
+  <description>
+    <p>
+      Noctorium plays YouTube Music and SoundCloud from one place: one library, one queue, scrobbling,
+      lyrics, and Connect to the Noctorium phone app.
+    </p>
+    <p>
+      This Flatpak carries its own mpv, so it plays without anything else installed.
+    </p>
+    <p>
+      Noctorium is an independent third-party client. It is not affiliated with Google, YouTube or
+      SoundCloud.
+    </p>
+  </description>
+  <launchable type="desktop-id">app.noctorium.Noctorium.desktop</launchable>
+  <url type="homepage">https://github.com/Noctorium/Noctorium-Desktop</url>
+  <url type="bugtracker">https://github.com/Noctorium/Noctorium-Desktop/issues</url>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

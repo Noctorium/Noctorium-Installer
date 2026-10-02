@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Noctorium Installer
+Comment=Installs Noctorium, the music player
+Exec=noctorium-installer
+Icon=noctorium-installer
+Terminal=false
+Categories=Utility;

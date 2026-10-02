@@ -1,0 +1,6 @@
+#!/bin/sh
+# The AppImage's entry point. The runtime mounts the image somewhere under /tmp and runs this, and all it
+# does is find the jpackage launcher inside and hand over -- so Noctorium starts exactly as it does from
+# /opt, with its own Java runtime, and plays through this machine's mpv.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/noctorium/bin/Noctorium" "$@"

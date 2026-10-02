@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Noctorium
+GenericName=Music player
+Comment=One music player for YouTube Music and SoundCloud
+Exec=noctorium
+Icon=noctorium
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=app-noctorium-MainKt
