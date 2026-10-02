@@ -61,7 +61,8 @@ jobs:
             cp pc/target/x86_64-unknown-linux-musl/release/noctorium-installer-cli out/noctorium-installer-cli-linux-x64
             # The claim is that it runs anywhere; a dynamic one would only run where it was built.
             file out/noctorium-installer-cli-linux-x64
-            file out/noctorium-installer-cli-linux-x64 | grep -q 'statically linked'
+            # Rust links musl binaries as static PIEs, which file describes in its own words.
+            file out/noctorium-installer-cli-linux-x64 | grep -q -E 'static(ally|-pie) linked'
           fi
           ls -la out
 

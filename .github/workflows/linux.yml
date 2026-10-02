@@ -52,8 +52,10 @@ jobs:
         # the install with exit status 3 while the package itself is perfectly good.
         run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm xdg-utils desktop-file-utils shared-mime-info
 
+      # createDistributable is the application folder on its own, which the packages are built from but
+      # do not leave behind: it is what the Arch package, the AppImage and the Flatpak are made of.
       - name: Package
-        run: ./gradlew packageDeb packageRpm -PappVersion="${VERSION#v}" --stacktrace
+        run: ./gradlew packageDeb packageRpm createDistributable -PappVersion="${VERSION#v}" --stacktrace
 
       - name: Name the files after the version
         run: |
@@ -92,7 +94,11 @@ jobs:
         run: |
           set -euo pipefail
           app=build/compose/binaries/main/app/Noctorium
-          test -x "$app/bin/Noctorium" || { echo "jpackage left no application folder at $app"; exit 1; }
+          if [ ! -x "$app/bin/Noctorium" ]; then
+            echo "jpackage left no application folder at $app. What there is:"
+            find build/compose -maxdepth 4 -type d | sort
+            exit 1
+          fi
           mkdir -p stage
           tar -C "$(dirname "$app")" -czf stage/noctorium-linux-app.tar.gz Noctorium
           ls -la stage
