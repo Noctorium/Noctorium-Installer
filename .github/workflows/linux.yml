@@ -1,0 +1,339 @@
+name: Linux packages
+
+# Every Linux format of the desktop application, from one build of it.
+#
+# jpackage builds the .deb and the .rpm, and on the way builds the application folder they both contain:
+# a launcher, the jars, and a Java runtime of its own. The other three formats are that same folder
+# wrapped differently -- an Arch package that puts it in /opt like the others, an AppImage that runs it
+# from wherever the file is, and a Flatpak that runs it in a sandbox with an mpv of its own -- so the
+# folder is passed on from the first job as an artifact, and nothing is compiled twice.
+#
+# That artifact is named stage-linux-app, and the release leaves anything named stage-* out: it is a
+# step between jobs, not something to download.
+#
+# Called by release.yml for a release and by packaging.yml to try the packaging without one.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'The version, without the leading v'
+        required: true
+        type: string
+      desktop_ref:
+        description: 'Noctorium-Desktop branch, tag or commit to build'
+        required: true
+        type: string
+
+env:
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  packages:
+    name: Debian and Fedora packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Desktop
+          ref: ${{ inputs.desktop_ref }}
+          submodules: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+
+      # jpackage shells out to these. Without rpm it does not warn and skip -- it fails the task, which is
+      # the right behaviour but an obscure failure if you have not met it before.
+      - name: Install the packaging tools
+        # xdg-utils and desktop-file-utils are for the package's own post-install hook, not for building:
+        # jpackage writes one that registers the .desktop entry, and on a runner without them dpkg fails
+        # the install with exit status 3 while the package itself is perfectly good.
+        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm xdg-utils desktop-file-utils shared-mime-info
+
+      - name: Package
+        run: ./gradlew packageDeb packageRpm -PappVersion="${VERSION#v}" --stacktrace
+
+      - name: Name the files after the version
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          mkdir -p out
+          for f in build/compose/binaries/main/deb/*.deb; do
+            cp "$f" "out/noctorium_${version}_amd64.deb"
+          done
+          for f in build/compose/binaries/main/rpm/*.rpm; do
+            cp "$f" "out/noctorium-${version}.x86_64.rpm"
+          done
+          ls -la out
+
+      # A package that installs is the claim being made, so it is made here rather than by whoever
+      # downloads it. dpkg is run for real; rpm is only queried, because installing a Fedora package on
+      # Ubuntu proves nothing about Fedora and breaks the runner's own package database trying.
+      - name: Check the packages are well formed
+        run: |
+          set -euo pipefail
+          # A headless runner has no menu directories, and jpackage's post-install script registers the
+          # desktop entry into them -- it stops with "No writable system menu directory found" and dpkg
+          # reports a failed install for a package that is perfectly good. Any real desktop has these; the
+          # runner is made to look like one so the check below tests the case that actually matters.
+          sudo mkdir -p /usr/share/applications /usr/share/desktop-directories
+          sudo dpkg --install out/*.deb
+          test -x /opt/noctorium/bin/Noctorium || { echo "the deb did not put the binary where it said"; exit 1; }
+          sudo dpkg --remove noctorium
+          rpm --query --package --info out/*.rpm
+          rpm --query --package --list out/*.rpm | grep -q 'bin/Noctorium'
+
+      # Tarred rather than uploaded as a folder: an artifact keeps neither the launcher's executable bit
+      # nor the runtime's symbolic links, and the folder is useless without both. Already compressed, so
+      # the artifact is not compressed again.
+      - name: Keep the application folder for the other formats
+        run: |
+          set -euo pipefail
+          app=build/compose/binaries/main/app/Noctorium
+          test -x "$app/bin/Noctorium" || { echo "jpackage left no application folder at $app"; exit 1; }
+          mkdir -p stage
+          tar -C "$(dirname "$app")" -czf stage/noctorium-linux-app.tar.gz Noctorium
+          ls -la stage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-linux-app
+          path: stage/noctorium-linux-app.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+          if-no-files-found: error
+
+  arch:
+    name: Arch Linux package
+    needs: packages
+    runs-on: ubuntu-latest
+    # makepkg and pacman are Arch's own and are not packaged for Ubuntu, so this runs in Arch.
+    container: archlinux:base-devel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-linux-app
+          path: stage
+
+      # makepkg refuses to run as root, which is what a container is, so it gets a user of its own.
+      - name: Build the package
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          # pacman allows no hyphen in a version; see the PKGBUILD.
+          pkgver="${version//-/}"
+          useradd --create-home builder
+          mkdir -p build out
+          cp packaging/arch/PKGBUILD packaging/arch/noctorium.desktop stage/noctorium-linux-app.tar.gz build/
+          sed -i "s/^pkgver=.*/pkgver=${pkgver}/" build/PKGBUILD
+          chown -R builder build
+          # --nodeps: the dependencies are what it runs with, not what it is built with, and installing
+          # them is the check below.
+          (cd build && sudo -u builder makepkg --nodeps --noconfirm)
+          mv build/noctorium-"${pkgver}"-1-x86_64.pkg.tar.zst "out/noctorium-${version}-1-x86_64.pkg.tar.zst"
+          ls -la out
+
+      - name: Check the package is well formed
+        run: |
+          set -euo pipefail
+          package=$(ls out/*.pkg.tar.zst)
+          pacman -Qip "$package"
+          pacman -Qlp "$package" | grep -q 'opt/noctorium/bin/Noctorium'
+          pacman -Qlp "$package" | grep -q 'usr/bin/noctorium'
+
+      # Installed for real, which is what proves every name in depends exists, and then every library in
+      # it is asked what it links against. Chromium for the sign-in window arrives packed inside a jar, so
+      # it is unpacked and asked too: it is the part most likely to need something a minimal Arch lacks.
+      - name: Install it and check nothing it links against is missing
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm
+          pacman -U --noconfirm out/*.pkg.tar.zst
+          test -x /opt/noctorium/bin/Noctorium
+          test "$(readlink /usr/bin/noctorium)" = /opt/noctorium/bin/Noctorium
+          pacman -S --noconfirm --needed desktop-file-utils
+          desktop-file-validate /usr/share/applications/noctorium.desktop
+
+          runtime=/opt/noctorium/lib/runtime/lib
+          export LD_LIBRARY_PATH="$runtime:$runtime/server:/opt/noctorium/lib/app"
+          missing=$(find /opt/noctorium -name '*.so*' -type f -exec ldd {} \; 2>/dev/null | grep 'not found' | sort -u || true)
+
+          cef=$(mktemp -d)
+          jar=$(find /opt/noctorium/lib/app -name 'jcef-natives-linux-amd64*.jar' | head -1)
+          if [ -n "$jar" ]; then
+            # The jar holds one archive of the whole Chromium build, which jcefmaven unpacks at first use.
+            inner=$(bsdtar -tf "$jar" | grep '\.tar\.gz$' | head -1)
+            bsdtar -xOf "$jar" "$inner" | tar -xz -C "$cef"
+            chromium=$(find "$cef" -name '*.so*' -type f -exec env LD_LIBRARY_PATH="$cef" ldd {} \; 2>/dev/null | grep 'not found' | sort -u || true)
+            missing=$(printf '%s\n%s\n' "$missing" "$chromium" | sed '/^$/d')
+          else
+            echo "::warning::No jcef-natives jar found in the application; Chromium's libraries were not checked."
+          fi
+          if [ -n "$missing" ]; then
+            echo "These libraries are needed and nothing in depends provides them:"
+            echo "$missing" | sort -u
+            exit 1
+          fi
+          echo "Everything links."
+
+      # namcap is Arch's own lint. Its opinion is shown rather than enforced: it objects to a bundled
+      # Java runtime in /opt on principle, and that is the whole design of this package.
+      - name: What namcap thinks
+        continue-on-error: true
+        run: |
+          pacman -S --noconfirm --needed namcap
+          namcap build/PKGBUILD || true
+          namcap out/*.pkg.tar.zst 2>&1 | grep -v -E 'ELF file .* (has executable stack|lacks FULL RELRO|lacks GNU_PROPERTY)' | head -80 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+
+  appimage:
+    name: AppImage
+    needs: packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-linux-app
+          path: stage
+
+      # The continuous build is the maintained one; the numbered releases of the old appimagetool stopped
+      # years ago. It runs without FUSE when told to extract itself, which is the only way it runs here.
+      - name: Fetch appimagetool
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          sudo apt-get update && sudo apt-get install -y desktop-file-utils
+
+      - name: Build the AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          ARCH: x86_64
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          dir="$RUNNER_TEMP/Noctorium.AppDir"
+          mkdir -p "$dir/usr/lib" "$dir/usr/share/applications" "$dir/usr/share/icons/hicolor/512x512/apps"
+          tar -xzf stage/noctorium-linux-app.tar.gz -C "$dir/usr/lib"
+          mv "$dir/usr/lib/Noctorium" "$dir/usr/lib/noctorium"
+          install -m755 packaging/appimage/AppRun "$dir/AppRun"
+          desktop-file-validate packaging/appimage/noctorium.desktop
+          cp packaging/appimage/noctorium.desktop "$dir/noctorium.desktop"
+          cp packaging/appimage/noctorium.desktop "$dir/usr/share/applications/noctorium.desktop"
+          cp "$dir/usr/lib/noctorium/lib/Noctorium.png" "$dir/noctorium.png"
+          cp "$dir/usr/lib/noctorium/lib/Noctorium.png" "$dir/usr/share/icons/hicolor/512x512/apps/noctorium.png"
+          ln -s noctorium.png "$dir/.DirIcon"
+          mkdir -p out
+          # No AppStream file, so the check for one is skipped rather than warned about.
+          "$RUNNER_TEMP/appimagetool" --no-appstream "$dir" "out/Noctorium-${version}-x86_64.AppImage"
+          ls -la out
+
+      # Unpacked by its own runtime -- the same code that mounts it on somebody's desktop -- and looked
+      # inside, so a broken image fails here rather than on a double click.
+      - name: Check the AppImage opens
+        run: |
+          set -euo pipefail
+          image=$(realpath out/*.AppImage)
+          cd "$RUNNER_TEMP"
+          "$image" --appimage-extract > /dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/usr/lib/noctorium/bin/Noctorium
+          test -f squashfs-root/usr/lib/noctorium/lib/app/Noctorium.cfg
+          test -f squashfs-root/noctorium.desktop
+          echo "The launcher is where AppRun looks for it."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0
+
+  flatpak:
+    name: Flatpak
+    needs: packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-linux-app
+          path: packaging/flatpak
+
+      - name: Install Flatpak and flatpak-builder
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder dbus-x11
+          # Ubuntu stops unprivileged programs making user namespaces unless AppArmor has a profile for
+          # them, and bubblewrap -- which both building and running a Flatpak go through -- needs one.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      # mpv and the libraries under it only change when the manifest does, so they are kept between runs.
+      - uses: actions/cache@v4
+        with:
+          path: .flatpak-builder
+          key: flatpak-builder-${{ hashFiles('packaging/flatpak/app.noctorium.Noctorium.yml') }}
+          restore-keys: flatpak-builder-
+
+      - name: Build the Flatpak
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          sed -i -e "s/@VERSION@/${version}/" -e "s/@DATE@/$(date -u +%Y-%m-%d)/" \
+            packaging/flatpak/app.noctorium.Noctorium.metainfo.xml
+          flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
+            --repo="$RUNNER_TEMP/repo" "$RUNNER_TEMP/build" packaging/flatpak/app.noctorium.Noctorium.yml
+          mkdir -p out
+          # The bundle names Flathub as where its runtime comes from, so installing it on a machine that
+          # has never heard of Flathub still knows where to look.
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            "$RUNNER_TEMP/repo" "out/Noctorium-${version}-x86_64.flatpak" app.noctorium.Noctorium
+          ls -la out
+
+      # Installed the way the installer installs it -- twice, because the second time is an upgrade and
+      # that is the case that refuses without --reinstall -- and then mpv inside it is asked to play
+      # something over https, which exercises the runtime's FFmpeg, its TLS and the audio output at once.
+      - name: Check the Flatpak installs and its mpv plays
+        run: |
+          set -euo pipefail
+          bundle=$(ls out/*.flatpak)
+          flatpak install --user -y --reinstall --bundle "$bundle"
+          flatpak install --user -y --reinstall --bundle "$bundle"
+          flatpak info --user app.noctorium.Noctorium
+          run() { dbus-run-session -- flatpak run --user "$@"; }
+          run --command=sh app.noctorium.Noctorium -c \
+            'test -x /app/noctorium/bin/Noctorium && test "$NOCTORIUM_MPV_PATH" = /app/bin/mpv && echo "launcher and mpv are where they should be"'
+          run --command=/app/bin/mpv app.noctorium.Noctorium --version
+          run --command=/app/bin/mpv app.noctorium.Noctorium --ad=help | grep -i -E 'opus|vorbis|mp3|aac' || true
+          run --command=/app/bin/mpv app.noctorium.Noctorium --no-config --no-video --ao=null --length=2 \
+            --af='lavfi=[acompressor=threshold=-20dB:ratio=4:makeup=8,alimiter=limit=0.95]' \
+            https://raw.githubusercontent.com/mdn/webaudio-examples/main/audio-basics/outfoxing.mp3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: out/*
+          if-no-files-found: error
+          compression-level: 0

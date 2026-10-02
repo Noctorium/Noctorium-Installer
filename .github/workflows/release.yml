@@ -1,11 +1,14 @@
 name: Release
 
-# Builds the things people install -- a Windows installer, an Android APK, a .deb and an .rpm -- from the
-# application repositories, and publishes them here. This repository is where releases live and what the
-# in-app updater watches; it holds no application code of its own.
+# Builds the things people install -- a Windows installer, an Android APK, and for Linux a .deb, an .rpm,
+# an Arch package, an AppImage and a Flatpak -- from the application repositories, and publishes them
+# here. This repository is where releases live and what the in-app updater watches; it holds no
+# application code of its own, only the installers and the packaging in packaging/.
 #
 # jpackage cannot cross-build. It reads the JDK it is running on and produces a package for that machine
-# and no other, which is why there is a job per platform rather than a matrix over formats. The desktop
+# and no other, which is why there is a job per platform rather than a matrix over formats. The Linux
+# formats beyond the .deb and the .rpm are the same application folder wrapped differently, so they are
+# made from it in linux.yml rather than built again. The desktop
 # packages each carry their own copy of Chromium for the sign-in window, so they are large and slow to
 # build; that is the cost of the application working on a machine with nothing installed on it.
 #
@@ -118,69 +121,15 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  # The .deb and the .rpm, and from the folder they contain the Arch package, the AppImage and the
+  # Flatpak. One call, so the release waits for all five.
   linux:
-    name: Debian and Fedora packages
+    name: Linux
     needs: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: Noctorium/Noctorium-Desktop
-          ref: ${{ env.DESKTOP_REF }}
-          submodules: true
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
-
-      # jpackage shells out to these. Without rpm it does not warn and skip -- it fails the task, which is
-      # the right behaviour but an obscure failure if you have not met it before.
-      - name: Install the packaging tools
-        # xdg-utils and desktop-file-utils are for the package's own post-install hook, not for building:
-        # jpackage writes one that registers the .desktop entry, and on a runner without them dpkg fails
-        # the install with exit status 3 while the package itself is perfectly good.
-        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm xdg-utils desktop-file-utils shared-mime-info
-
-      - name: Package
-        run: ./gradlew packageDeb packageRpm -PappVersion="${APP_VERSION#v}" --stacktrace
-
-      - name: Name the files after the version
-        run: |
-          set -euo pipefail
-          version="${APP_VERSION#v}"
-          mkdir -p out
-          for f in build/compose/binaries/main/deb/*.deb; do
-            cp "$f" "out/noctorium_${version}_amd64.deb"
-          done
-          for f in build/compose/binaries/main/rpm/*.rpm; do
-            cp "$f" "out/noctorium-${version}.x86_64.rpm"
-          done
-          ls -la out
-
-      # A package that installs is the claim being made, so it is made here rather than by whoever
-      # downloads it. dpkg is run for real; rpm is only queried, because installing a Fedora package on
-      # Ubuntu proves nothing about Fedora and breaks the runner's own package database trying.
-      - name: Check the packages are well formed
-        run: |
-          set -euo pipefail
-          # A headless runner has no menu directories, and jpackage's post-install script registers the
-          # desktop entry into them -- it stops with "No writable system menu directory found" and dpkg
-          # reports a failed install for a package that is perfectly good. Any real desktop has these; the
-          # runner is made to look like one so the check below tests the case that actually matters.
-          sudo mkdir -p /usr/share/applications /usr/share/desktop-directories
-          sudo dpkg --install out/*.deb
-          test -x /opt/noctorium/bin/Noctorium || { echo "the deb did not put the binary where it said"; exit 1; }
-          sudo dpkg --remove noctorium
-          rpm --query --package --info out/*.rpm
-          rpm --query --package --list out/*.rpm | grep -q 'bin/Noctorium'
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          path: out/*
-          if-no-files-found: error
+    uses: ./.github/workflows/linux.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+      desktop_ref: ${{ inputs.desktop_ref || github.ref_name }}
 
   android:
     name: Android APK
@@ -254,44 +203,7 @@ jobs:
   # current one to hand, and they are built from this repository, so they need no key.
   pc-installer:
     name: PC installer
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            binary: noctorium-installer
-            published: noctorium-installer-linux-x64
-          - os: windows-latest
-            binary: noctorium-installer.exe
-            published: Noctorium-Installer-windows-x64.exe
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pc
-      # The window is drawn with OpenGL through X11 or Wayland; Windows has its own in the SDK.
-      - name: Libraries the window is built against
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
-      - run: cargo test
-        working-directory: pc
-      - run: cargo build --release
-        working-directory: pc
-      - name: Name it after the platform
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          cp "pc/target/release/${{ matrix.binary }}" "out/${{ matrix.published }}"
-          ls -la out
-      - uses: actions/upload-artifact@v4
-        with:
-          name: installer-${{ matrix.os }}
-          path: out/*
-          if-no-files-found: error
+    uses: ./.github/workflows/pc-installer.yml
 
   phone-installer:
     name: Phone installer
@@ -327,6 +239,8 @@ jobs:
 
   release:
     name: Publish the release
+    # linux is linux.yml: the .deb, the .rpm, the Arch package, the AppImage and the Flatpak, every one of
+    # which has to succeed. pc-installer is both systems' window and terminal installers.
     needs: [windows, linux, android, pc-installer, phone-installer]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
@@ -340,7 +254,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          find artifacts -type f -exec cp {} release/ \;
+          # Everything but what the jobs handed one another on the way. stage-linux-app is the
+          # application folder the Linux formats are made from: three hundred megabytes nobody should
+          # download, and not something anybody could install.
+          for artifact in artifacts/*/; do
+            case "$(basename "$artifact")" in
+              stage-*) echo "Not published: $(basename "$artifact")"; continue ;;
+            esac
+            find "$artifact" -type f -exec cp {} release/ \;
+          done
           ls -la release
           # Generated from inside the folder rather than stripping the path off afterwards. The sed that
           # used to do that left three spaces where coreutils writes two, which the application's own
@@ -366,14 +288,28 @@ jobs:
             | Windows | `Noctorium-*-windows-x64-setup.exe`, or the `.msi` for deployment |
             | Debian, Ubuntu, Mint | `noctorium_*_amd64.deb` |
             | Fedora, RHEL, openSUSE | `noctorium-*.x86_64.rpm` |
+            | Arch, Manjaro, EndeavourOS | `noctorium-*-1-x86_64.pkg.tar.zst`, for `pacman -U` |
+            | Any Linux | `Noctorium-*-x86_64.AppImage`: mark it executable and run it |
+            | Any Linux with Flatpak | `Noctorium-*-x86_64.flatpak`: `flatpak install --user --bundle` |
             | Android | `Noctorium-*.apk` |
+            | Noctorium CLI, the player in a terminal | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, when the release carries them |
 
             Or take an installer instead, which fetches whichever release is latest at the time and
-            checks it before it runs it: `Noctorium-Installer-windows-x64.exe`,
-            `noctorium-installer-linux-x64`, `Noctorium-Installer-android.apk`.
+            checks it before it runs it:
+
+            | | Window | Terminal |
+            | --- | --- | --- |
+            | Windows | `Noctorium-Installer-windows-x64.exe` | `noctorium-installer-cli-windows-x64.exe` |
+            | Linux | `Noctorium-Installer-x86_64.AppImage`, or `noctorium-installer-linux-x64` | `noctorium-installer-cli-linux-x64` |
+            | Android | `Noctorium-Installer-android.apk` | |
+
+            The terminal installer asks which product and which format, or takes `--yes` and the
+            defaults; `--help` says the rest.
 
             The desktop packages carry their own Java runtime and their own copy of Chromium for the
-            sign-in window, which is why they are large: nothing needs installing first. The Windows
-            packages carry mpv and yt-dlp as well.
+            sign-in window, which is why they are large. The Windows packages carry mpv and yt-dlp as
+            well, and so does the Flatpak, which brings its own mpv into its sandbox. The .deb, the .rpm,
+            the Arch package and the AppImage play through the distribution's mpv -- the Arch package
+            depends on it, and for the rest it is one `apt install mpv` or the like.
 
             `SHA256SUMS.txt` lists the checksum of every file above.

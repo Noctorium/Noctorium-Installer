@@ -1,0 +1,121 @@
+name: PC installer
+
+# The installers this repository holds the source of: the small programs somebody downloads once, which
+# then fetch whatever the latest release is. Built from this repository, so they need no key.
+#
+# Five files come out of it. The window and the terminal installer for each of Windows and Linux, and the
+# Linux window again as an AppImage, which a desktop runs on a double click where a bare binary first has
+# to be made executable. The Linux terminal installer is built for musl and linked statically, so it runs
+# on any distribution however old its C library -- it is the one most likely to be fetched with curl onto
+# a server nobody has updated in a while.
+#
+# Called by release.yml for a release and by packaging.yml to try the packaging without one.
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: PC installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-musl
+          - os: windows-latest
+            targets: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pc
+      # The window is drawn with OpenGL through X11 or Wayland; Windows has its own in the SDK. musl-gcc is
+      # for ring, the one dependency with C in it.
+      - name: Libraries the window is built against
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev musl-tools desktop-file-utils
+      - run: cargo test
+        working-directory: pc
+      - run: cargo build --release
+        working-directory: pc
+      - name: The terminal installer, static
+        if: runner.os == 'Linux'
+        working-directory: pc
+        run: cargo build --release --no-default-features --bin noctorium-installer-cli --target x86_64-unknown-linux-musl
+
+      - name: Name them after the platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp pc/target/release/noctorium-installer.exe out/Noctorium-Installer-windows-x64.exe
+            cp pc/target/release/noctorium-installer-cli.exe out/noctorium-installer-cli-windows-x64.exe
+          else
+            cp pc/target/release/noctorium-installer out/noctorium-installer-linux-x64
+            cp pc/target/x86_64-unknown-linux-musl/release/noctorium-installer-cli out/noctorium-installer-cli-linux-x64
+            # The claim is that it runs anywhere; a dynamic one would only run where it was built.
+            file out/noctorium-installer-cli-linux-x64
+            file out/noctorium-installer-cli-linux-x64 | grep -q 'statically linked'
+          fi
+          ls -la out
+
+      # Run, not just built: the version, the help, and a dry run against the real latest release, which
+      # is the whole of discovery -- GitHub, the checksums, this machine's package manager -- without
+      # installing anything on the runner.
+      - name: Ask the terminal installer what it would do
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cli=$(ls out/noctorium-installer-cli-*)
+          "$cli" -V
+          "$cli" --help > /dev/null
+          "$cli" --list --no-color
+          "$cli" --dry-run --yes
+          # Usage errors are 2, not 1, so a script can tell a typo from a failed install.
+          status=0; "$cli" --not-an-option 2> /dev/null || status=$?
+          test "$status" = 2
+
+      - name: Fetch appimagetool
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+
+      - name: The window installer as an AppImage
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          ARCH: x86_64
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/Installer.AppDir"
+          mkdir -p "$dir/usr/bin" "$dir/usr/share/applications" "$dir/usr/share/icons/hicolor/128x128/apps"
+          install -m755 pc/target/release/noctorium-installer "$dir/usr/bin/noctorium-installer"
+          install -m755 packaging/appimage/installer/AppRun "$dir/AppRun"
+          desktop-file-validate packaging/appimage/installer/noctorium-installer.desktop
+          cp packaging/appimage/installer/noctorium-installer.desktop "$dir/"
+          cp packaging/appimage/installer/noctorium-installer.desktop "$dir/usr/share/applications/"
+          cp pc/assets/noctorium-mark-128.png "$dir/noctorium-installer.png"
+          cp pc/assets/noctorium-mark-128.png "$dir/usr/share/icons/hicolor/128x128/apps/noctorium-installer.png"
+          ln -s noctorium-installer.png "$dir/.DirIcon"
+          "$RUNNER_TEMP/appimagetool" --no-appstream "$dir" out/Noctorium-Installer-x86_64.AppImage
+          # Opened by its own runtime and run with --help, which needs no display.
+          ./out/Noctorium-Installer-x86_64.AppImage --help > "$RUNNER_TEMP/help.txt"
+          head -3 "$RUNNER_TEMP/help.txt"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: out/*
+          if-no-files-found: error

@@ -43,6 +43,10 @@ jobs:
         run: cargo fmt --check
       - name: Lints
         run: cargo clippy --all-targets -- -D warnings
+      # The terminal installer is released built without the window toolkit, so it is linted that way
+      # too: code that only compiles because eframe happens to be there would otherwise go unnoticed.
+      - name: Lints, without the window
+        run: cargo clippy --no-default-features --lib --bin noctorium-installer-cli -- -D warnings
       - name: Tests
         run: cargo test
       - name: Build
@@ -55,6 +59,8 @@ jobs:
           path: |
             pc/target/release/noctorium-installer
             pc/target/release/noctorium-installer.exe
+            pc/target/release/noctorium-installer-cli
+            pc/target/release/noctorium-installer-cli.exe
           if-no-files-found: error
           retention-days: 14
 
