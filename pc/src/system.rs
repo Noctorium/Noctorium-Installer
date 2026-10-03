@@ -5,6 +5,9 @@
 //! reads as Ubuntu and Debian, and EndeavourOS as Arch, without this having to know every derivative
 //! there is. The tool still has to be on PATH -- Fedora Silverblue is Fedora with no dnf -- and a machine
 //! that says nothing recognisable is asked tool by tool, which is how this program has always worked.
+//!
+//! On a Mac the answer that matters is the processor, which is not always what this program is running
+//! as: see [mac_hardware].
 
 use crate::github::Arch;
 use std::path::Path;
@@ -14,6 +17,7 @@ use std::path::Path;
 pub enum Os {
     Windows,
     Linux,
+    MacOs,
     /// Anything else. Named so the message can say what it is.
     Other(&'static str),
 }
@@ -199,12 +203,15 @@ impl PackageManager {
 #[derive(Debug, Clone)]
 pub struct System {
     pub os: Os,
-    /// What this machine runs, or nothing for a processor nothing is built for.
+    /// What this machine runs, or nothing for a processor nothing is built for. On a Mac, the processor
+    /// itself, even when this program is running translated by Rosetta.
     pub arch: Option<Arch>,
     /// The architecture as Rust names it, for saying what this machine is when it is none of the above.
     pub arch_name: &'static str,
     /// What `/etc/os-release` says, on Linux.
     pub release: Option<OsRelease>,
+    /// The version of macOS, `14.5`, on a Mac.
+    pub mac_version: Option<String>,
     pub family: Option<Family>,
     /// The family's package manager, if its tool is actually here.
     pub package_manager: Option<PackageManager>,
@@ -222,8 +229,15 @@ impl System {
             Os::Windows
         } else if cfg!(target_os = "linux") {
             Os::Linux
+        } else if cfg!(target_os = "macos") {
+            Os::MacOs
         } else {
             Os::Other(std::env::consts::OS)
+        };
+        let arch = if os == Os::MacOs {
+            mac_hardware(Arch::this_machine(), sysctl_number)
+        } else {
+            Arch::this_machine()
         };
         let release = (os == Os::Linux)
             .then(|| std::fs::read_to_string("/etc/os-release").ok())
@@ -244,9 +258,14 @@ impl System {
         let root = is_root();
         System {
             os,
-            arch: Arch::this_machine(),
+            arch,
             arch_name: std::env::consts::ARCH,
             release,
+            // Since 10.13.4. Asked of the kernel rather than of sw_vers, which is a program to start and
+            // read for one short line.
+            mac_version: (os == Os::MacOs)
+                .then(|| sysctl_text("kern.osproductversion"))
+                .flatten(),
             family,
             package_manager,
             flatpak: os == Os::Linux && on_path("flatpak"),
@@ -258,7 +277,7 @@ impl System {
         }
     }
 
-    /// One line saying what this is: `Ubuntu 24.04.1 LTS`, `Windows`.
+    /// One line saying what this is: `Ubuntu 24.04.1 LTS`, `macOS 14.5`, `Windows`.
     pub fn describe(&self) -> String {
         match self.os {
             Os::Windows => "Windows".to_string(),
@@ -267,8 +286,122 @@ impl System {
                 .as_ref()
                 .map(OsRelease::describe)
                 .unwrap_or_else(|| "Linux".to_string()),
+            Os::MacOs => match &self.mac_version {
+                Some(version) => format!("macOS {version}"),
+                None => "macOS".to_string(),
+            },
             Os::Other(name) => name.to_string(),
         }
+    }
+}
+
+/// The processor a Mac really has, given what this program is running as and a way of asking the kernel
+/// for a number by name.
+///
+/// The terminal installer is one universal binary, and macOS chooses which half of it runs: the ARM half
+/// on Apple silicon -- unless whatever started it is itself running under Rosetta, a Terminal set to open
+/// using Rosetta or an x86-64 shell, and then the Intel half runs, translated, and everything this
+/// program can ask about itself says x86-64. Taking that at its word would install the Intel Noctorium on
+/// a machine that runs the ARM one natively, translated for as long as it is installed.
+///
+/// So the kernel is asked. `hw.optional.arm64` is 1 on Apple silicon however the asking process runs, and
+/// `sysctl.proc_translated` is 1 for a process under Rosetta, which only Apple silicon has; either says
+/// ARM. On an Intel Mac neither is 1 -- the first is 0 or not there at all, depending on the version of
+/// macOS -- and the answer is the one this program was built as.
+pub fn mac_hardware(running_as: Option<Arch>, ask: impl Fn(&str) -> Option<i64>) -> Option<Arch> {
+    let says_arm = |name: &str| ask(name) == Some(1);
+    if says_arm("hw.optional.arm64") || says_arm("sysctl.proc_translated") {
+        return Some(Arch::Aarch64);
+    }
+    running_as
+}
+
+/// The raw value the kernel keeps under [name], or nothing if it keeps none by that name.
+#[cfg(target_os = "macos")]
+fn sysctl(name: &str) -> Option<Vec<u8>> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut size: libc::size_t = 0;
+    // SAFETY: with no buffer, sysctlbyname only writes the value's length into `size`, which is live.
+    let asked = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if asked != 0 || size == 0 {
+        return None;
+    }
+    let mut value = vec![0u8; size];
+    // SAFETY: the buffer is `size` bytes long, which is what the call is told it may write.
+    let read = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            value.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if read != 0 {
+        return None;
+    }
+    value.truncate(size);
+    Some(value)
+}
+
+/// A number the kernel keeps, such as `hw.optional.arm64`. The ones asked for here are 32-bit integers,
+/// and a 64-bit one is read too rather than misread.
+#[cfg(target_os = "macos")]
+fn sysctl_number(name: &str) -> Option<i64> {
+    let value = sysctl(name)?;
+    match value.len() {
+        4 => Some(i32::from_ne_bytes(<[u8; 4]>::try_from(&value[..]).ok()?).into()),
+        8 => Some(i64::from_ne_bytes(<[u8; 8]>::try_from(&value[..]).ok()?)),
+        _ => None,
+    }
+}
+
+/// A string the kernel keeps, such as `kern.osproductversion`, without the NUL it ends with.
+#[cfg(target_os = "macos")]
+fn sysctl_text(name: &str) -> Option<String> {
+    let value = sysctl(name)?;
+    let text = String::from_utf8_lossy(&value);
+    let text = text.trim_end_matches('\0').trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sysctl_number(_: &str) -> Option<i64> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sysctl_text(_: &str) -> Option<String> {
+    None
+}
+
+/// Whether this user can create things in [folder], asked of the kernel, which is what will decide.
+///
+/// Used on a Mac for /Applications, which every administrator can write to and a standard account
+/// cannot. Working it out from the permission bits instead would mean knowing every group this user is
+/// in, and would still miss an access control list.
+pub fn writable(folder: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(folder.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: access only reads the path, which is NUL-terminated and outlives the call.
+        unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = folder;
+        false
     }
 }
 
@@ -310,7 +443,7 @@ pub fn on_path(tool: &str) -> bool {
 /// Whether `directory` is one of the entries of a Unix PATH, read the way the shell reads it.
 ///
 /// Split on the colon by hand rather than with `split_paths`, which splits on whatever this machine
-/// uses -- and the question is only ever asked of a Linux PATH, but the tests run everywhere.
+/// uses -- and the question is only ever asked of a Linux or a Mac PATH, but the tests run everywhere.
 pub fn on_search_path(path: &str, directory: &Path) -> bool {
     let wanted = directory.to_string_lossy();
     let wanted = wanted.trim_end_matches('/');
@@ -531,5 +664,77 @@ HOME_URL="https://www.ubuntu.com/"
         assert!(on_search_path("/home/sam/.local/bin/:/usr/bin", home_bin));
         assert!(!on_search_path("/usr/bin:/bin", home_bin));
         assert!(!on_search_path("", home_bin));
+
+        // A Mac's PATH as a new Terminal has it, which ~/.local/bin is not on until somebody puts it there.
+        let mac_bin = Path::new("/Users/sam/.local/bin");
+        let mac = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        assert!(!on_search_path(mac, mac_bin));
+        assert!(on_search_path(
+            &format!("/Users/sam/.local/bin:{mac}"),
+            mac_bin
+        ));
+    }
+
+    /// The kernel's answers on each kind of Mac, by name, with anything not listed absent.
+    fn kernel(answers: &'static [(&'static str, i64)]) -> impl Fn(&str) -> Option<i64> {
+        move |name| {
+            answers
+                .iter()
+                .find(|(asked, _)| *asked == name)
+                .map(|(_, value)| *value)
+        }
+    }
+
+    #[test]
+    fn apple_silicon_is_arm_even_when_this_program_runs_under_rosetta() {
+        let native = kernel(&[("hw.optional.arm64", 1), ("sysctl.proc_translated", 0)]);
+        assert_eq!(
+            mac_hardware(Some(Arch::Aarch64), native),
+            Some(Arch::Aarch64)
+        );
+
+        // The Intel half of the universal binary, started from a Terminal set to open using Rosetta.
+        let translated = kernel(&[("hw.optional.arm64", 1), ("sysctl.proc_translated", 1)]);
+        assert_eq!(
+            mac_hardware(Some(Arch::X86_64), translated),
+            Some(Arch::Aarch64),
+            "Rosetta must not earn an Apple silicon Mac the Intel build"
+        );
+
+        // Either answer is enough on its own.
+        let only_translated = kernel(&[("sysctl.proc_translated", 1)]);
+        assert_eq!(
+            mac_hardware(Some(Arch::X86_64), only_translated),
+            Some(Arch::Aarch64)
+        );
+    }
+
+    #[test]
+    fn an_intel_mac_is_what_this_program_was_built_as() {
+        // Newer macOS answers 0 on Intel; older has no such name at all.
+        let newer = kernel(&[("hw.optional.arm64", 0), ("sysctl.proc_translated", 0)]);
+        assert_eq!(mac_hardware(Some(Arch::X86_64), newer), Some(Arch::X86_64));
+        let older = kernel(&[]);
+        assert_eq!(mac_hardware(Some(Arch::X86_64), older), Some(Arch::X86_64));
+    }
+
+    #[test]
+    fn a_mac_says_which_version_of_macos_it_is() {
+        let mut system = System {
+            os: Os::MacOs,
+            arch: Some(Arch::Aarch64),
+            arch_name: "aarch64",
+            release: None,
+            mac_version: Some("14.5".into()),
+            family: None,
+            package_manager: None,
+            flatpak: false,
+            mpv: false,
+            root: false,
+            sudo_user: None,
+        };
+        assert_eq!(system.describe(), "macOS 14.5");
+        system.mac_version = None;
+        assert_eq!(system.describe(), "macOS");
     }
 }

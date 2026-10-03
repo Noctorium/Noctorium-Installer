@@ -13,7 +13,7 @@ use crate::fetch;
 use crate::github::{self, Arch, Asset, Problem, Release};
 use crate::install::{self, Action, Method, Places};
 use crate::system::{self, Asking, Os, System};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// What can be installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +61,8 @@ impl Products {
     }
 }
 
-/// How the desktop application is to be installed on Linux.
+/// How the desktop application is to be installed on Linux. Windows and a Mac have one way each, which
+/// is `auto`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Format {
     /// The distribution's own package when it is one this knows, and otherwise the AppImage.
@@ -95,7 +96,11 @@ impl Format {
             Method::Pacman => Format::Arch,
             Method::AppImage => Format::AppImage,
             Method::Flatpak => Format::Flatpak,
-            Method::WindowsSetup | Method::CliWindows | Method::CliLinux => Format::Auto,
+            Method::WindowsSetup
+            | Method::MacDiskImage
+            | Method::CliWindows
+            | Method::CliLinux
+            | Method::CliMac => Format::Auto,
         }
     }
 }
@@ -172,10 +177,10 @@ pub struct Offer {
 
 /// The ways the desktop application can be installed on this machine, best first.
 ///
-/// On Windows there is one. On Linux there is the distribution's own package when its package manager is
-/// here, then the AppImage, which runs anywhere, then the Flatpak, which needs Flatpak. Each says whether
-/// this release carries it, so a menu can show what there is rather than offering something that will
-/// fail after the download.
+/// On Windows there is one, and on a Mac there is one, the disk image for its processor. On Linux there
+/// is the distribution's own package when its package manager is here, then the AppImage, which runs
+/// anywhere, then the Flatpak, which needs Flatpak. Each says whether this release carries it, so a menu
+/// can show what there is rather than offering something that will fail after the download.
 pub fn offers(found: &Found) -> Vec<Offer> {
     let system = &found.system;
     let Some(arch) = system.arch else {
@@ -184,6 +189,7 @@ pub fn offers(found: &Found) -> Vec<Offer> {
     let mut methods: Vec<(Method, Option<String>)> = Vec::new();
     match system.os {
         Os::Windows => methods.push((Method::WindowsSetup, None)),
+        Os::MacOs => methods.push((Method::MacDiskImage, None)),
         Os::Linux => {
             if let Some(manager) = system.package_manager {
                 methods.push((Method::for_package_manager(manager), None));
@@ -278,14 +284,14 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
     let system = &found.system;
     if let Os::Other(name) = system.os {
         return Err(Problem::Local(format!(
-            "This installer is for Windows and Linux, and this is {name}. The releases page has \
+            "This installer is for Windows, macOS and Linux, and this is {name}. The releases page has \
              everything Noctorium is published for."
         )));
     }
     let arch = system.arch.ok_or_else(|| {
         Problem::Local(format!(
-            "Noctorium is published for x86-64, and this machine is {}. There is nothing in the \
-             release it could run.",
+            "Noctorium is published for x86-64, and for ARM64 on a Mac, and this machine is {}. There \
+             is nothing in the release it could run.",
             system.arch_name
         ))
     })?;
@@ -319,7 +325,9 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
             None
         };
 
-        if !method.needs_root() && method != Method::WindowsSetup {
+        // Not said of the Windows installer, which asks its own questions, nor of a Mac application, which
+        // root puts in the /Applications everybody shares rather than in a home folder of its own.
+        if !method.needs_root() && !matches!(method, Method::WindowsSetup | Method::MacDiskImage) {
             if let Some(user) = &system.sudo_user {
                 notes.push(format!(
                     "This is running as root through sudo, so {} will be installed for root and not \
@@ -347,8 +355,21 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
             ));
         }
 
+        if method == Method::MacDiskImage {
+            if let Some(folder) = &found.places.applications {
+                if folder != Path::new("/Applications") {
+                    notes.push(format!(
+                        "This account cannot write to /Applications -- on a Mac that takes an \
+                         administrator -- so Noctorium goes into {}, which is yours alone. Spotlight \
+                         finds it there just the same.",
+                        found.places.show(folder)
+                    ));
+                }
+            }
+        }
+
         let file = download_folder().join(&asset.name);
-        let actions = install::actions_for(method, &file, escalation, &found.places)?;
+        let mut actions = install::actions_for(method, &file, escalation, &found.places)?;
         let user_bin_on_path = found
             .places
             .user_bin()
@@ -360,6 +381,12 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
                  is. The end of the install says how."
                     .into(),
             );
+        }
+        // Most Linux distributions put ~/.local/bin on PATH once it exists, and the end of the install says
+        // what to do on one that does not. macOS never does, so on a Mac it is done here, and shown in
+        // the plan like everything else that changes a file.
+        if method == Method::CliMac && !user_bin_on_path {
+            actions.push(install::add_user_bin_to_path(&found.places)?);
         }
         let start = install::how_to_start(method, &found.places, user_bin_on_path);
         items.push(Item {
@@ -401,6 +428,16 @@ fn desktop_method(
                 .collect();
             return Err(if wanted.is_empty() {
                 Problem::NothingForThisMachine
+            } else if system.os == Os::MacOs {
+                // An older release is no help here: the Mac is the newest thing Noctorium is built for.
+                let arch = system.arch.unwrap_or(Arch::X86_64);
+                Problem::Missing(format!(
+                    "{} has nothing for a Mac: it carries no {} ({}). Noctorium for macOS is new, and \
+                     releases from before it have none; --list shows what this one carries.",
+                    found.release.tag,
+                    Method::MacDiskImage.describe(),
+                    Method::MacDiskImage.wanted().pattern(arch)
+                ))
             } else {
                 Problem::Missing(format!(
                     "{} has nothing this machine can install: it carries no {}. An older release may \
@@ -438,11 +475,10 @@ fn desktop_method(
         ));
     }
 
-    if system.os == Os::Windows {
-        return Err(Problem::Local(
-            "There is only one way to install Noctorium on Windows, so --format is for Linux."
-                .into(),
-        ));
+    if let Some(name) = only_one_way(system.os) {
+        return Err(Problem::Local(format!(
+            "There is only one way to install Noctorium on {name}, so --format is for Linux."
+        )));
     }
     let method = match format {
         Format::Auto => unreachable!("handled above"),
@@ -496,6 +532,15 @@ fn desktop_method(
     }
 }
 
+/// The name of [os] when it has exactly one way of installing Noctorium, and so no use for --format.
+pub fn only_one_way(os: Os) -> Option<&'static str> {
+    match os {
+        Os::Windows => Some("Windows"),
+        Os::MacOs => Some("macOS"),
+        Os::Linux | Os::Other(_) => None,
+    }
+}
+
 /// The package manager that installs a native format here, if there is one.
 fn native_method(format: Format, system: &System) -> Option<Method> {
     let installed = |manager: system::PackageManager| system::on_path(manager.tool());
@@ -517,9 +562,11 @@ fn native_method(format: Format, system: &System) -> Option<Method> {
 
 /// The method and file for the terminal player.
 fn cli_method(found: &Found, arch: Arch) -> Result<(Method, Asset), Problem> {
-    let (method, system_name) = match found.system.os {
-        Os::Windows => (Method::CliWindows, "Windows"),
-        _ => (Method::CliLinux, "Linux"),
+    let method = Method::cli_for(found.system.os);
+    let system_name = match found.system.os {
+        Os::Windows => "Windows",
+        Os::MacOs => "macOS",
+        _ => "Linux",
     };
     match found.release.asset_for(method.wanted(), arch) {
         Some(asset) => Ok((method, asset.clone())),
@@ -566,6 +613,11 @@ pub enum Step {
 
 /// Downloads what [`plan`] found, checks it, installs it, and clears up after itself.
 pub fn carry_out(plan: &Plan, report: &mut dyn FnMut(Step)) -> Result<(), Problem> {
+    // Everything that would stop an install, asked before anything is downloaded for it.
+    for item in &plan.items {
+        install::check_before_download(item.method)?;
+    }
+
     let directory = download_folder();
     std::fs::create_dir_all(&directory)
         .map_err(|e| Problem::Local(format!("Could not make a folder to download into: {e}")))?;
@@ -633,6 +685,11 @@ mod tests {
 2222222222222222222222222222222222222222222222222222222222222222  noctorium_0.7.0_amd64.deb
 3333333333333333333333333333333333333333333333333333333333333333  Noctorium-0.7.0-x86_64.AppImage
 4444444444444444444444444444444444444444444444444444444444444444  noctorium-cli-0.7.0-linux-x64.tar.gz
+5555555555555555555555555555555555555555555555555555555555555555  Noctorium-0.7.0-macos-arm64.dmg
+6666666666666666666666666666666666666666666666666666666666666666  Noctorium-0.7.0-macos-x64.dmg
+7777777777777777777777777777777777777777777777777777777777777777  noctorium-cli-0.7.0-macos-arm64.tar.gz
+8888888888888888888888888888888888888888888888888888888888888888  noctorium-cli-0.7.0-macos-x64.tar.gz
+9999999999999999999999999999999999999999999999999999999999999999  noctorium-installer-cli-macos
 ";
 
     fn release(names: &[&str]) -> Release {
@@ -658,6 +715,7 @@ mod tests {
                 id: "ubuntu".into(),
                 ..Default::default()
             }),
+            mac_version: None,
             family,
             package_manager: manager,
             flatpak: false,
@@ -677,7 +735,41 @@ mod tests {
                 home: Some("/home/sam".into()),
                 data: Some("/home/sam/.local/share".into()),
                 programs: Some(r"C:\Users\Sam\AppData\Local\Programs".into()),
+                applications: None,
             },
+        }
+    }
+
+    /// A Mac, of the kind given, run by an administrator who has not put ~/.local/bin on PATH.
+    fn mac(arch: Arch) -> System {
+        System {
+            os: Os::MacOs,
+            arch: Some(arch),
+            arch_name: if arch == Arch::Aarch64 {
+                "aarch64"
+            } else {
+                "x86_64"
+            },
+            release: None,
+            mac_version: Some("14.5".into()),
+            family: None,
+            package_manager: None,
+            flatpak: false,
+            mpv: false,
+            root: false,
+            sudo_user: None,
+        }
+    }
+
+    fn found_on_a_mac(arch: Arch, names: &[&str]) -> Found {
+        Found {
+            places: Places {
+                home: Some("/Users/sam".into()),
+                data: Some("/Users/sam/.local/share".into()),
+                programs: None,
+                applications: Some("/Applications".into()),
+            },
+            ..found(mac(arch), names)
         }
     }
 
@@ -687,6 +779,178 @@ mod tests {
         "noctorium-cli-0.7.0-linux-x64.tar.gz",
         "SHA256SUMS.txt",
     ];
+
+    /// What a release with Macs in it carries, around the Mac's own files: the others' files, and the
+    /// installers, none of which a Mac may take.
+    const WITH_MACS: &[&str] = &[
+        "Noctorium-0.7.0-windows-x64-setup.exe",
+        "noctorium_0.7.0_amd64.deb",
+        "Noctorium-0.7.0-x86_64.AppImage",
+        "noctorium-cli-0.7.0-linux-x64.tar.gz",
+        "noctorium-installer-cli-macos",
+        "Noctorium-0.7.0-macos-arm64.dmg",
+        "Noctorium-0.7.0-macos-x64.dmg",
+        "noctorium-cli-0.7.0-macos-arm64.tar.gz",
+        "noctorium-cli-0.7.0-macos-x64.tar.gz",
+        "noctorium-installer-cli-linux-x64",
+        "SHA256SUMS.txt",
+    ];
+
+    #[test]
+    fn each_kind_of_mac_is_planned_the_disk_image_for_its_processor() {
+        for (arch, image, published) in [
+            (Arch::Aarch64, "Noctorium-0.7.0-macos-arm64.dmg", "5"),
+            (Arch::X86_64, "Noctorium-0.7.0-macos-x64.dmg", "6"),
+        ] {
+            let plan =
+                plan(&found_on_a_mac(arch, WITH_MACS), Options::default()).expect("should plan");
+            assert_eq!(plan.items.len(), 1);
+            let item = &plan.items[0];
+            assert_eq!(item.method, Method::MacDiskImage);
+            assert_eq!(item.asset.name, image, "{arch:?}");
+            assert_eq!(item.published, published.repeat(64));
+            assert_eq!(
+                item.escalation, None,
+                "nothing on a Mac asks for a password"
+            );
+            assert_eq!(
+                item.actions,
+                vec![Action::PlaceApp {
+                    image: download_folder().join(image),
+                    into: PathBuf::from("/Applications"),
+                }]
+            );
+            assert!(item.actions[0]
+                .describe(&plan.places)
+                .contains("into /Applications"));
+            assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+            assert!(!plan.needs_password());
+        }
+    }
+
+    #[test]
+    fn both_products_on_a_mac_are_the_app_and_the_cli_with_path_put_right() {
+        let options = Options {
+            products: Products::Both,
+            ..Options::default()
+        };
+        let plan = plan(&found_on_a_mac(Arch::Aarch64, WITH_MACS), options).expect("should plan");
+        let methods: Vec<Method> = plan.items.iter().map(|i| i.method).collect();
+        assert_eq!(methods, vec![Method::MacDiskImage, Method::CliMac]);
+        let cli = &plan.items[1];
+        assert_eq!(cli.asset.name, "noctorium-cli-0.7.0-macos-arm64.tar.gz");
+        assert_eq!(cli.published, "7".repeat(64));
+        // The PATH the tests run with never has /Users/sam/.local/bin on it, so the profile is changed.
+        assert_eq!(
+            cli.actions,
+            vec![
+                Action::UnpackCli {
+                    archive: download_folder().join("noctorium-cli-0.7.0-macos-arm64.tar.gz"),
+                    into: PathBuf::from("/Users/sam/.local/share/noctorium-cli"),
+                    link: Some(PathBuf::from("/Users/sam/.local/bin/noctorium")),
+                },
+                Action::AddToProfile {
+                    profile: PathBuf::from("/Users/sam/.zprofile"),
+                },
+            ]
+        );
+        assert!(cli.start.contains("Open a new terminal"), "{}", cli.start);
+    }
+
+    #[test]
+    fn a_mac_has_one_way_to_install_and_no_use_for_a_format() {
+        let found = found_on_a_mac(Arch::Aarch64, WITH_MACS);
+        let offers = offers(&found);
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].method, Method::MacDiskImage);
+        assert!(offers[0].recommended);
+        assert_eq!(
+            offers[0].asset.as_ref().map(|a| a.name.as_str()),
+            Some("Noctorium-0.7.0-macos-arm64.dmg")
+        );
+
+        for format in [Format::Deb, Format::AppImage, Format::Flatpak] {
+            let options = Options {
+                format,
+                ..Options::default()
+            };
+            let said = plan(&found, options).unwrap_err().to_string();
+            assert!(
+                said.contains("on macOS, so --format is for Linux"),
+                "{said}"
+            );
+        }
+        assert_eq!(only_one_way(Os::MacOs), Some("macOS"));
+        assert_eq!(only_one_way(Os::Windows), Some("Windows"));
+        assert_eq!(only_one_way(Os::Linux), None);
+    }
+
+    /// 0.7 and everything before it: Windows, Linux and installers, and nothing a Mac can take.
+    #[test]
+    fn a_release_from_before_the_mac_says_so_rather_than_installing_something_else() {
+        let found = found_on_a_mac(Arch::Aarch64, ALL);
+        let said = plan(&found, Options::default()).unwrap_err().to_string();
+        assert!(said.contains("nothing for a Mac"), "{said}");
+        assert!(
+            said.contains("Noctorium-<version>-macos-arm64.dmg"),
+            "{said}"
+        );
+
+        let options = Options {
+            products: Products::Cli,
+            ..Options::default()
+        };
+        let said = plan(&found, options).unwrap_err().to_string();
+        assert!(said.contains("no Noctorium CLI for macOS yet"), "{said}");
+        assert!(
+            said.contains("noctorium-cli-<version>-macos-arm64.tar.gz"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_account_that_cannot_write_to_applications_is_told_where_it_went_instead() {
+        let mut found = found_on_a_mac(Arch::X86_64, WITH_MACS);
+        found.places.applications = Some("/Users/sam/Applications".into());
+        let plan = plan(&found, Options::default()).expect("should plan");
+        assert_eq!(
+            plan.items[0].actions,
+            vec![Action::PlaceApp {
+                image: download_folder().join("Noctorium-0.7.0-macos-x64.dmg"),
+                into: PathBuf::from("/Users/sam/Applications"),
+            }]
+        );
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("cannot write to /Applications")),
+            "{:?}",
+            plan.notes
+        );
+    }
+
+    #[test]
+    fn root_through_sudo_on_a_mac_is_warned_only_about_the_cli() {
+        let mut system = mac(Arch::Aarch64);
+        system.root = true;
+        system.sudo_user = Some("sam".into());
+        let found = Found {
+            system,
+            ..found_on_a_mac(Arch::Aarch64, WITH_MACS)
+        };
+        let options = Options {
+            products: Products::Both,
+            ..Options::default()
+        };
+        let plan = plan(&found, options).expect("should plan");
+        let warnings: Vec<&String> = plan
+            .notes
+            .iter()
+            .filter(|n| n.contains("not for sam"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{:?}", plan.notes);
+        assert!(warnings[0].contains("Noctorium CLI"), "{}", warnings[0]);
+    }
 
     #[test]
     fn auto_takes_the_distributions_own_package() {

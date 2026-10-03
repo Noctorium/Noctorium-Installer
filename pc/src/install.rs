@@ -6,12 +6,18 @@
 //! Noctorium CLI -- have no package manager, so for those this is the installer, and does the little an
 //! installer does: put the file somewhere permanent, make it runnable, and tell the desktop or the shell
 //! where it is.
+//!
+//! A Mac has no package manager of its own either, and installing an application there has only ever
+//! meant copying it out of its disk image into Applications. This does that, the way a person dragging it
+//! across would, minus the window to drag it in.
 
 use crate::archive;
 use crate::github::{Problem, Wanted};
-use crate::system::PackageManager;
+use crate::system::{Os, PackageManager};
+use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 /// Flathub, where the runtime every Flatpak bundle is built against comes from.
 pub const FLATHUB: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
@@ -22,11 +28,24 @@ pub const FLATPAK_ID: &str = "app.noctorium.Noctorium";
 /// the file itself, because a desktop reads PNGs and not raw RGBA.
 const ICON: &[u8] = include_bytes!("../assets/noctorium-mark-128.png");
 
+/// The application inside the Mac's disk image, and its name once installed.
+pub const MAC_APP: &str = "Noctorium.app";
+
+/// What marks the line this installer adds to a shell profile on a Mac, so that it is added once, and so
+/// that whoever reads the file later knows where it came from.
+pub const PROFILE_MARK: &str = "# Added by the Noctorium installer";
+/// The line itself. `$HOME` rather than the path it stands for, so the profile still reads right if the
+/// home folder is ever renamed or the file is copied to another Mac.
+pub const PROFILE_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
+
 /// How one file gets installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     /// Windows: run the installer and let it do its own asking.
     WindowsSetup,
+    /// macOS: Noctorium.app copied out of the disk image into /Applications, or into ~/Applications for
+    /// an account that cannot write there.
+    MacDiskImage,
     /// Debian and its relatives: apt, so dependencies are resolved rather than merely reported.
     Apt,
     /// Fedora and its relatives.
@@ -43,6 +62,9 @@ pub enum Method {
     CliWindows,
     /// The terminal player, unpacked under ~/.local/share and linked from ~/.local/bin.
     CliLinux,
+    /// The terminal player on a Mac: as on Linux, and then ~/.local/bin put on the PATH in ~/.zprofile
+    /// when it is not there already, which on a Mac it never is to begin with.
+    CliMac,
 }
 
 impl Method {
@@ -56,10 +78,20 @@ impl Method {
         }
     }
 
+    /// How the terminal player is installed on [os].
+    pub fn cli_for(os: Os) -> Method {
+        match os {
+            Os::Windows => Method::CliWindows,
+            Os::MacOs => Method::CliMac,
+            Os::Linux | Os::Other(_) => Method::CliLinux,
+        }
+    }
+
     /// The release file this takes.
     pub fn wanted(self) -> Wanted {
         match self {
             Method::WindowsSetup => Wanted::WindowsSetup,
+            Method::MacDiskImage => Wanted::MacDiskImage,
             Method::Apt => Wanted::DebianPackage,
             Method::Dnf | Method::Zypper => Wanted::RpmPackage,
             Method::Pacman => Wanted::ArchPackage,
@@ -67,10 +99,12 @@ impl Method {
             Method::Flatpak => Wanted::Flatpak,
             Method::CliWindows => Wanted::CliWindows,
             Method::CliLinux => Wanted::CliLinux,
+            Method::CliMac => Wanted::CliMac,
         }
     }
 
-    /// Whether it writes where only root can. Everything else is installed for this user alone.
+    /// Whether it writes where only root can. Everything else is installed for this user alone -- or, on
+    /// a Mac, into the /Applications that an administrator can write to without asking for anything.
     pub fn needs_root(self) -> bool {
         matches!(
             self,
@@ -82,13 +116,14 @@ impl Method {
     pub fn describe(self) -> &'static str {
         match self {
             Method::WindowsSetup => "Windows installer (.exe)",
+            Method::MacDiskImage => "macOS disk image (.dmg)",
             Method::Apt => "Debian package (.deb)",
             Method::Dnf | Method::Zypper => "RPM package (.rpm)",
             Method::Pacman => "Arch Linux package (.pkg.tar.zst)",
             Method::AppImage => "AppImage",
             Method::Flatpak => "Flatpak",
             Method::CliWindows => "folder of its own, on your PATH",
-            Method::CliLinux => "folder of its own, linked into ~/.local/bin",
+            Method::CliLinux | Method::CliMac => "folder of its own, linked into ~/.local/bin",
         }
     }
 
@@ -96,13 +131,16 @@ impl Method {
     pub fn explain(self) -> &'static str {
         match self {
             Method::WindowsSetup => "the usual installer, which asks its own questions",
+            Method::MacDiskImage => "Noctorium.app, copied into Applications as if dragged there",
             Method::Apt => "through apt, which fetches what it needs",
             Method::Dnf => "through dnf, which fetches what it needs",
             Method::Zypper => "through zypper, which fetches what it needs",
             Method::Pacman => "through pacman, with mpv as a dependency",
             Method::AppImage => "one file in ~/Applications, no password, uses this machine's mpv",
             Method::Flatpak => "sandboxed, for you alone, with its own mpv",
-            Method::CliWindows | Method::CliLinux => "for you alone, no administrator needed",
+            Method::CliWindows | Method::CliLinux | Method::CliMac => {
+                "for you alone, no administrator needed"
+            }
         }
     }
 }
@@ -118,6 +156,9 @@ pub struct Places {
     pub data: Option<PathBuf>,
     /// `%LOCALAPPDATA%\Programs`, where per-user Windows programs live.
     pub programs: Option<PathBuf>,
+    /// The folder a Mac application goes in: `/Applications` when this user can write to it, and
+    /// `~/Applications` when not. Nothing anywhere else.
+    pub applications: Option<PathBuf>,
 }
 
 impl Places {
@@ -133,10 +174,25 @@ impl Places {
         let programs = std::env::var_os("LOCALAPPDATA")
             .filter(|l| !l.is_empty())
             .map(|l| PathBuf::from(l).join("Programs"));
+        // /Applications is where anybody looks for an application, and every administrator on a Mac can
+        // write to it without being asked for a password. A standard account cannot, and for that macOS
+        // keeps ~/Applications, which Spotlight finds just the same and nobody else can touch. Decided
+        // here, before anything happens, so the plan can say which.
+        let applications = if cfg!(target_os = "macos") {
+            let shared = PathBuf::from("/Applications");
+            if crate::system::writable(&shared) {
+                Some(shared)
+            } else {
+                home.as_ref().map(|h| h.join("Applications"))
+            }
+        } else {
+            None
+        };
         Places {
             home,
             data,
             programs,
+            applications,
         }
     }
 
@@ -169,7 +225,25 @@ impl Places {
             .join("icons/hicolor/128x128/apps/noctorium.png"))
     }
 
+    /// The folder Noctorium.app goes in on a Mac.
+    pub fn mac_applications(&self) -> Result<PathBuf, Problem> {
+        self.need(&self.applications, "HOME")
+    }
+
+    /// The login profile of zsh, which has been every Mac's shell since Catalina. Every Terminal window is
+    /// a login shell and reads it, after /etc/zprofile has had path_helper build the system's PATH -- so a
+    /// line here puts ~/.local/bin first, where in ~/.zshenv path_helper would push it behind the system's
+    /// own folders.
+    pub fn shell_profile(&self) -> Result<PathBuf, Problem> {
+        Ok(self.need(&self.home, "HOME")?.join(".zprofile"))
+    }
+
     /// Where the Noctorium CLI is unpacked to.
+    ///
+    /// On a Mac the same folder as on Linux, rather than in ~/Library/Application Support. Noctorium keeps
+    /// its own data under ~/.local/share on a Mac too, so the CLI's program sits beside it; the link to it
+    /// is in ~/.local/bin, beside both; and a path with no space in it is one that a link, a PATH and a
+    /// shell script can all be trusted to read whole. It is also one sentence in the README, not two.
     pub fn cli_folder(&self, windows: bool) -> Result<PathBuf, Problem> {
         if windows {
             Ok(self
@@ -181,7 +255,7 @@ impl Places {
     }
 
     /// `~/.local/bin`, which systemd's file hierarchy and most distributions' default profiles put on
-    /// PATH for every user.
+    /// PATH for every user. macOS does not, which is what [Places::shell_profile] is for.
     pub fn user_bin(&self) -> Result<PathBuf, Problem> {
         Ok(self.need(&self.home, "HOME")?.join(".local").join("bin"))
     }
@@ -217,6 +291,10 @@ pub enum Action {
     },
     /// The Flatpak taken out if it is installed already, keeping its data, so a bundle can go in.
     ClearFlatpak { id: String },
+    /// Noctorium.app copied out of a disk image into [into], in place of any copy already there.
+    PlaceApp { image: PathBuf, into: PathBuf },
+    /// The line that puts ~/.local/bin on PATH, added once to the end of a shell profile.
+    AddToProfile { profile: PathBuf },
 }
 
 /// What installing [file] with [method] takes, as steps that can be shown before any of them is run.
@@ -304,13 +382,28 @@ pub fn actions_for(
             into: places.cli_folder(true)?,
             link: None,
         }],
-        Method::CliLinux => vec![Action::UnpackCli {
+        Method::CliLinux | Method::CliMac => vec![Action::UnpackCli {
             archive: file.to_path_buf(),
             into: places.cli_folder(false)?,
             link: Some(places.user_bin()?.join("noctorium")),
         }],
+        Method::MacDiskImage => vec![Action::PlaceApp {
+            image: file.to_path_buf(),
+            into: places.mac_applications()?,
+        }],
     };
     Ok(actions)
+}
+
+/// The step that puts ~/.local/bin on PATH on a Mac, for a plan to add when it is not there already.
+///
+/// Separate from [actions_for] because whether it is needed depends on the PATH this program was started
+/// with, which is the caller's to read, and because a step that would change nothing should not be shown
+/// as if it were about to.
+pub fn add_user_bin_to_path(places: &Places) -> Result<Action, Problem> {
+    Ok(Action::AddToProfile {
+        profile: places.shell_profile()?,
+    })
 }
 
 /// A path apt will read as a file. Without a directory in front of it, `noctorium.deb` is a package name.
@@ -368,6 +461,14 @@ impl Action {
             Action::ClearFlatpak { id } => format!(
                 "flatpak uninstall --user -y {id}, if an older one is installed (its settings stay)"
             ),
+            Action::PlaceApp { into, .. } => format!(
+                "copy {MAC_APP} from the disk image into {}, replacing any older copy there",
+                places.show(into)
+            ),
+            Action::AddToProfile { profile } => format!(
+                "put ~/.local/bin on your PATH, with a line at the end of {}",
+                places.show(profile)
+            ),
         }
     }
 
@@ -387,8 +488,358 @@ impl Action {
                 link,
             } => install_cli(archive, into, link.as_deref()),
             Action::ClearFlatpak { id } => clear_flatpak(id),
+            Action::PlaceApp { image, into } => place_app(image, into),
+            Action::AddToProfile { profile } => add_to_profile(profile),
         }
     }
+}
+
+/// Anything that would make installing with [method] fail, found out before the download rather than
+/// after it.
+///
+/// On a Mac that is Noctorium being open. A running application reads its own files as it goes -- a
+/// Java one more than most, loading classes from its jars as they are first wanted -- and swapping them
+/// out from under it is how it crashes; finding that out after three hundred megabytes have come down
+/// would waste them.
+pub fn check_before_download(method: Method) -> Result<(), Problem> {
+    match method {
+        Method::MacDiskImage => refuse_if_running(),
+        _ => Ok(()),
+    }
+}
+
+/// What `pgrep -f` looks for: the program inside any Noctorium.app, wherever it was started from -- the
+/// one in /Applications, one in ~/Applications, or one still on the disk image.
+const RUNNING_APP: &str = "Noctorium.app/Contents/MacOS";
+
+fn refuse_if_running() -> Result<(), Problem> {
+    // pgrep says 0 when it found something and 1 when it did not. Anything else, or no pgrep, is not
+    // reason enough to refuse an install.
+    let running = Command::new("pgrep")
+        .args(["-f", RUNNING_APP])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if running {
+        return Err(Problem::Local(
+            "Noctorium is open. Quit it -- Command-Q, or Quit Noctorium from its menu -- and run this \
+             again: an application cannot safely be replaced while it is running. Nothing has been \
+             changed."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Copies Noctorium.app out of the disk image at [image] into the folder [into].
+///
+/// The image is attached read-only at a folder of this program's own and detached again on every way out
+/// of here, failures included. The quarantine flag is taken off the copy, so its first start is not
+/// stopped to ask about something downloaded from the internet: the download was checked against the
+/// release's own checksum before it got this far, which is a better answer to that question than a
+/// dialog.
+fn place_app(image: &Path, into: &Path) -> Result<(), Problem> {
+    // Asked again, because the download took long enough for somebody to have opened it meanwhile.
+    refuse_if_running()?;
+    let mounted = Mounted::attach(image)?;
+    let source = app_in(&mounted.point).ok_or_else(|| {
+        Problem::Local(format!(
+            "The disk image {} has no {MAC_APP} in it. It is not the shape this installer expects; the \
+             releases page has it to open by hand.",
+            file_name(image)
+        ))
+    })?;
+    let installed = replace_app(&source, into, &ditto)?;
+    clear_quarantine(&installed);
+    Ok(())
+}
+
+/// A disk image attached at a folder of this program's own, and detached again when this is dropped.
+struct Mounted {
+    point: PathBuf,
+}
+
+impl Mounted {
+    fn attach(image: &Path) -> Result<Mounted, Problem> {
+        let point = fresh_folder("noctorium-installer-image")?;
+        // -nobrowse keeps it off the desktop and out of the Finder's sidebar, -noautoopen stops a Finder
+        // window opening onto it, and reading is all that is needed of it. A mount point of this
+        // program's own, rather than one in /Volumes, cannot meet a Noctorium image somebody already has
+        // open. Standard input is closed, so an image that wanted a licence agreed to would be refused
+        // rather than wait for an answer nobody is going to type.
+        let attached = Command::new("hdiutil")
+            .args([
+                "attach",
+                "-nobrowse",
+                "-readonly",
+                "-noautoopen",
+                "-mountpoint",
+            ])
+            .arg(&point)
+            .arg(image)
+            .stdin(Stdio::null())
+            .output();
+        let failure = match attached {
+            Ok(output) if output.status.success() => return Ok(Mounted { point }),
+            Ok(output) => format!(
+                "hdiutil could not open the disk image {}: {}",
+                file_name(image),
+                what_it_said(&output)
+            ),
+            Err(e) => format!("Could not start hdiutil to open the disk image: {e}"),
+        };
+        let _ = fs::remove_dir(&point);
+        Err(Problem::Local(failure))
+    }
+}
+
+impl Drop for Mounted {
+    fn drop(&mut self) {
+        let detach = |force: bool| {
+            let mut command = Command::new("hdiutil");
+            command.arg("detach");
+            if force {
+                command.arg("-force");
+            }
+            command
+                .arg(&self.point)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        // A detach that fails is nearly always something still holding a file open on the image, briefly;
+        // -force is what hdiutil itself suggests then. If even that fails the image stays attached, out
+        // of sight, until the Mac restarts -- untidy, and nothing worse.
+        if !detach(false) {
+            detach(true);
+        }
+        let _ = fs::remove_dir(&self.point);
+    }
+}
+
+/// A new, empty folder in the temporary folder, made here and nowhere else: `create_dir` fails on one
+/// that already exists, which is what makes it fresh rather than something an earlier run left behind.
+fn fresh_folder(label: &str) -> Result<PathBuf, Problem> {
+    let base = std::env::temp_dir();
+    let mut last = None;
+    for attempt in 0..100 {
+        let folder = base.join(format!("{label}-{}-{attempt}", std::process::id()));
+        match fs::create_dir(&folder) {
+            Ok(()) => return Ok(folder),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(couldnt("make", &folder, e)),
+        }
+    }
+    Err(Problem::Local(format!(
+        "Could not make a folder in {} to open the disk image in: {}",
+        base.display(),
+        last.map(|e| e.to_string()).unwrap_or_default()
+    )))
+}
+
+/// The application at the top of a mounted disk image: Noctorium.app, or failing that the only
+/// application there.
+///
+/// Looked for rather than assumed, like the CLI's launcher, so an image that names it differently still
+/// installs -- as Noctorium.app, whatever it was called in the image. The link to Applications beside it
+/// is a link and not an application, and is passed over.
+pub fn app_in(mount: &Path) -> Option<PathBuf> {
+    let named = mount.join(MAC_APP);
+    if named.is_dir() {
+        return Some(named);
+    }
+    let apps: Vec<PathBuf> = fs::read_dir(mount)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        })
+        .collect();
+    match apps.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
+/// Puts the application at [source] into [folder] as Noctorium.app, in place of any copy already there,
+/// and says where it went.
+///
+/// The new copy is made beside the old one and renamed into place, so there is never a moment without a
+/// whole Noctorium.app: a copy that fails half way leaves the old one exactly as it was, and a rename that
+/// fails puts it back. [copy] does the copying -- `ditto` on a Mac, plain Rust in the tests.
+fn replace_app(
+    source: &Path,
+    folder: &Path,
+    copy: &dyn Fn(&Path, &Path) -> Result<(), Problem>,
+) -> Result<PathBuf, Problem> {
+    fs::create_dir_all(folder).map_err(|e| couldnt("make", folder, e))?;
+    let target = folder.join(MAC_APP);
+    let partial = folder.join(format!("{MAC_APP}.partial"));
+    let previous = folder.join(format!("{MAC_APP}.old"));
+    archive::remove_if_there(&partial)?;
+    archive::remove_if_there(&previous)?;
+
+    if let Err(problem) = copy(source, &partial) {
+        let _ = fs::remove_dir_all(&partial);
+        return Err(problem);
+    }
+
+    // Asked of the link itself, so a Noctorium.app that is a link to somewhere else is moved aside as a
+    // link rather than mistaken for nothing.
+    let had_one = fs::symlink_metadata(&target).is_ok();
+    if had_one {
+        if let Err(e) = fs::rename(&target, &previous) {
+            let _ = fs::remove_dir_all(&partial);
+            // Refused outright is what macOS does to a terminal that has not been allowed to change other
+            // developers' applications, since Ventura.
+            let permission = if e.kind() == io::ErrorKind::PermissionDenied {
+                " If macOS said this terminal was prevented from modifying apps, allow it under System \
+                 Settings, Privacy & Security, App Management, and run this again."
+            } else {
+                ""
+            };
+            return Err(Problem::Local(format!(
+                "Could not move the {MAC_APP} already in {} aside to replace it: {e}. It is still there, \
+                 untouched.{permission}",
+                folder.display()
+            )));
+        }
+    }
+    if let Err(e) = fs::rename(&partial, &target) {
+        if had_one {
+            let _ = fs::rename(&previous, &target);
+        }
+        let _ = fs::remove_dir_all(&partial);
+        return Err(couldnt("move the new Noctorium.app into", folder, e));
+    }
+
+    // Best effort, like the CLI's. What is left is clutter, not a broken install.
+    let _ = fs::remove_dir_all(&previous);
+    Ok(target)
+}
+
+/// Copies an application bundle with `ditto`, the copier made for them: it keeps everything a bundle
+/// carries -- its links, its extended attributes, its code signature -- exactly as it was.
+fn ditto(from: &Path, to: &Path) -> Result<(), Problem> {
+    let output = Command::new("ditto")
+        .arg(from)
+        .arg(to)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| Problem::Local(format!("Could not start ditto to copy {MAC_APP}: {e}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(Problem::Local(format!(
+            "ditto could not copy {MAC_APP} into {}: {}",
+            to.parent().unwrap_or(to).display(),
+            what_it_said(&output)
+        )))
+    }
+}
+
+/// Takes the quarantine flag off [path] and everything in it.
+///
+/// Normally there is none to take off: macOS flags what a browser or a mail program saves, not what a
+/// program like this downloads. But the flag travels with copies, and if it is there, from wherever, the
+/// first start stops to ask whether something downloaded from the internet should be opened -- or, for
+/// an application that is not notarised, refuses to open it at all. A failure is the usual answer when
+/// there was no flag to take off, and changes nothing that matters, so it is not reported.
+fn clear_quarantine(path: &Path) {
+    let _ = Command::new("xattr")
+        .args(["-dr", "com.apple.quarantine"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// What a program that failed said for itself, or how it ended when it said nothing.
+fn what_it_said(output: &Output) -> String {
+    let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !said.is_empty() {
+        return said;
+    }
+    output
+        .status
+        .code()
+        .map(|c| format!("exit code {c}"))
+        .unwrap_or_else(|| "no exit code".into())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn couldnt(what: &str, path: &Path, e: io::Error) -> Problem {
+    Problem::Local(format!("Could not {what} {}: {e}", path.display()))
+}
+
+/// What to add to the end of a shell profile that reads [existing] so that it puts ~/.local/bin on PATH,
+/// or nothing when it already does.
+///
+/// Nothing when the mark is there, which is this installer having been run before, and nothing when the
+/// line itself is, which is somebody having written it by hand. Otherwise the mark and the line, after a
+/// blank line to keep them apart from whatever is above, and after a line break first if the file's last
+/// line was never ended -- or the mark would be glued onto it.
+pub fn profile_addition(existing: &str) -> Option<String> {
+    if existing
+        .lines()
+        .any(|line| line.trim() == PROFILE_MARK || line.trim() == PROFILE_LINE)
+    {
+        return None;
+    }
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
+    }
+    if !existing.trim().is_empty() {
+        addition.push('\n');
+    }
+    addition.push_str(PROFILE_MARK);
+    addition.push('\n');
+    addition.push_str(PROFILE_LINE);
+    addition.push('\n');
+    Some(addition)
+}
+
+/// Adds the line to [profile], making the file if there is none, unless it is there already.
+///
+/// Appended rather than rewritten, so a profile that is a link into somebody's dotfiles stays a link and
+/// nothing else in it is touched. Read as bytes, so a profile with something in it that is not UTF-8 is
+/// still read rather than refused.
+fn add_to_profile(profile: &Path) -> Result<(), Problem> {
+    let failed = |e: io::Error| {
+        Problem::Local(format!(
+            "The Noctorium CLI is installed, but {} could not be changed to put ~/.local/bin on your \
+             PATH: {e}. Add {PROFILE_LINE} to it yourself, or run the CLI as ~/.local/bin/noctorium.",
+            profile.display()
+        ))
+    };
+    let existing = match fs::read(profile) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(failed(e)),
+    };
+    let Some(addition) = profile_addition(&existing) else {
+        return Ok(());
+    };
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(profile)
+        .map_err(failed)?;
+    file.write_all(addition.as_bytes()).map_err(failed)
 }
 
 /// Uninstalls the Flatpak for this user if it is there, and does nothing if it is not.
@@ -555,6 +1006,11 @@ fn make_executable(_: &Path) -> std::io::Result<()> {
 /// Unpacks the Noctorium CLI and makes `noctorium` something a new terminal can run.
 fn install_cli(archive: &Path, into: &Path, link: Option<&Path>) -> Result<(), Problem> {
     archive::install_folder(archive, into)?;
+    // For the same reason as the application's: a flagged launcher, or a flagged Java runtime under it,
+    // would be stopped by Gatekeeper the first time it was run.
+    if cfg!(target_os = "macos") {
+        clear_quarantine(into);
+    }
     let launcher = archive::launcher_in(into, cfg!(windows)).ok_or_else(|| {
         Problem::Local(format!(
             "The Noctorium CLI was unpacked into {}, but there is no launcher in it ({}). The archive \
@@ -767,6 +1223,13 @@ pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> 
         Method::WindowsSetup => {
             "Start it from the Start menu, or from the shortcut on the desktop.".into()
         }
+        Method::MacDiskImage => format!(
+            "Start it from Launchpad or Spotlight, or with open {}.",
+            places
+                .mac_applications()
+                .map(|folder| places.show(&folder.join(MAC_APP)))
+                .unwrap_or_else(|_| format!("/Applications/{MAC_APP}"))
+        ),
         Method::Apt | Method::Dnf | Method::Zypper => {
             "Start it from your applications menu, or run /opt/noctorium/bin/Noctorium.".into()
         }
@@ -785,12 +1248,24 @@ pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> 
             "Open a new terminal -- one already open still has the old PATH -- and run noctorium."
                 .into()
         }
-        Method::CliLinux if user_bin_on_path => "Run noctorium in a terminal.".into(),
+        Method::CliLinux | Method::CliMac if user_bin_on_path => {
+            "Run noctorium in a terminal.".into()
+        }
         Method::CliLinux => {
             "~/.local/bin is not on your PATH yet, so run it as ~/.local/bin/noctorium, \
              or add export PATH=\"$HOME/.local/bin:$PATH\" to ~/.profile and open a new terminal."
                 .into()
         }
+        // This terminal read ~/.zprofile before the line was in it, and never will again.
+        Method::CliMac => format!(
+            "Open a new terminal, which reads the line just added to {}, and run noctorium -- or run it \
+             here as ~/.local/bin/noctorium. A shell other than zsh needs {PROFILE_LINE} in its own \
+             profile.",
+            places
+                .shell_profile()
+                .map(|profile| places.show(&profile))
+                .unwrap_or_else(|_| "~/.zprofile".into())
+        ),
     }
 }
 
@@ -803,6 +1278,17 @@ mod tests {
             home: Some(PathBuf::from("/home/sam")),
             data: Some(PathBuf::from("/home/sam/.local/share")),
             programs: Some(PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs")),
+            applications: None,
+        }
+    }
+
+    /// An administrator's Mac, which can write to /Applications.
+    fn mac_places() -> Places {
+        Places {
+            home: Some(PathBuf::from("/Users/sam")),
+            data: Some(PathBuf::from("/Users/sam/.local/share")),
+            programs: None,
+            applications: Some(PathBuf::from("/Applications")),
         }
     }
 
@@ -1002,13 +1488,292 @@ mod tests {
         }
         for method in [
             Method::WindowsSetup,
+            Method::MacDiskImage,
             Method::AppImage,
             Method::Flatpak,
             Method::CliLinux,
             Method::CliWindows,
+            Method::CliMac,
         ] {
             assert!(!method.needs_root(), "{method:?}");
         }
+    }
+
+    #[test]
+    fn a_mac_copies_the_application_out_of_its_disk_image_into_applications() {
+        let actions = actions_for(
+            Method::MacDiskImage,
+            Path::new("/tmp/Noctorium-1.0.0-macos-arm64.dmg"),
+            None,
+            &mac_places(),
+        )
+        .unwrap();
+        assert_eq!(
+            actions,
+            vec![Action::PlaceApp {
+                image: PathBuf::from("/tmp/Noctorium-1.0.0-macos-arm64.dmg"),
+                into: PathBuf::from("/Applications"),
+            }]
+        );
+        let said = actions[0].describe(&mac_places());
+        assert!(said.contains("Noctorium.app"), "{said}");
+        assert!(said.contains("into /Applications"), "{said}");
+
+        // An account that cannot write to /Applications has its own.
+        let standard = Places {
+            applications: Some(PathBuf::from("/Users/sam/Applications")),
+            ..mac_places()
+        };
+        let actions = actions_for(
+            Method::MacDiskImage,
+            Path::new("/tmp/x.dmg"),
+            None,
+            &standard,
+        )
+        .unwrap();
+        assert_eq!(
+            actions,
+            vec![Action::PlaceApp {
+                image: PathBuf::from("/tmp/x.dmg"),
+                into: PathBuf::from("/Users/sam/Applications"),
+            }]
+        );
+        if !cfg!(windows) {
+            assert!(actions[0]
+                .describe(&standard)
+                .contains("into ~/Applications"));
+        }
+    }
+
+    #[test]
+    fn a_mac_installs_the_terminal_player_where_linux_does() {
+        let actions = actions_for(
+            Method::CliMac,
+            Path::new("/tmp/noctorium-cli-1.0.0-macos-arm64.tar.gz"),
+            None,
+            &mac_places(),
+        )
+        .unwrap();
+        assert_eq!(
+            actions,
+            vec![Action::UnpackCli {
+                archive: PathBuf::from("/tmp/noctorium-cli-1.0.0-macos-arm64.tar.gz"),
+                into: PathBuf::from("/Users/sam/.local/share/noctorium-cli"),
+                link: Some(PathBuf::from("/Users/sam/.local/bin/noctorium")),
+            }]
+        );
+        assert_eq!(
+            add_user_bin_to_path(&mac_places()).unwrap(),
+            Action::AddToProfile {
+                profile: PathBuf::from("/Users/sam/.zprofile"),
+            }
+        );
+        assert!(matches!(
+            add_user_bin_to_path(&Places::default()),
+            Err(Problem::Local(_))
+        ));
+    }
+
+    #[test]
+    fn each_system_has_its_own_way_of_installing_the_terminal_player() {
+        assert_eq!(Method::cli_for(Os::Windows), Method::CliWindows);
+        assert_eq!(Method::cli_for(Os::Linux), Method::CliLinux);
+        assert_eq!(Method::cli_for(Os::MacOs), Method::CliMac);
+    }
+
+    #[test]
+    fn the_profile_line_is_added_once_and_apart_from_what_is_there() {
+        let block = format!("{PROFILE_MARK}\n{PROFILE_LINE}\n");
+        assert_eq!(profile_addition("").as_deref(), Some(block.as_str()));
+        assert_eq!(
+            profile_addition("eval \"$(/opt/homebrew/bin/brew shellenv)\"\n").as_deref(),
+            Some(format!("\n{block}").as_str()),
+            "a blank line between somebody's own lines and this one"
+        );
+        assert_eq!(
+            profile_addition("export EDITOR=vim").as_deref(),
+            Some(format!("\n\n{block}").as_str()),
+            "a last line that was never ended is ended first"
+        );
+
+        // Already there, put there by this or by hand.
+        assert_eq!(profile_addition(&format!("export A=1\n\n{block}")), None);
+        assert_eq!(
+            profile_addition("  export PATH=\"$HOME/.local/bin:$PATH\"  \n"),
+            None
+        );
+        assert_eq!(profile_addition(&format!("{PROFILE_MARK}\n")), None);
+    }
+
+    #[test]
+    fn running_the_install_twice_leaves_the_profile_with_one_line() {
+        let here = crate::archive::tests::scratch("profile");
+        let profile = here.join(".zprofile");
+        add_to_profile(&profile).expect("made from nothing");
+        add_to_profile(&profile).expect("and left alone the second time");
+        assert_eq!(
+            fs::read_to_string(&profile).unwrap(),
+            format!("{PROFILE_MARK}\n{PROFILE_LINE}\n")
+        );
+
+        let other = here.join("existing");
+        fs::write(&other, "export EDITOR=vim\n").unwrap();
+        add_to_profile(&other).unwrap();
+        add_to_profile(&other).unwrap();
+        assert_eq!(
+            fs::read_to_string(&other).unwrap(),
+            format!("export EDITOR=vim\n\n{PROFILE_MARK}\n{PROFILE_LINE}\n"),
+            "what was there stays, first"
+        );
+    }
+
+    /// An application bundle with one file in it, as far as these tests need one.
+    fn bundle(at: &Path, files: &[(&str, &str)]) {
+        for (relative, contents) in files {
+            let file = at.join(relative);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, contents).unwrap();
+        }
+    }
+
+    /// What ditto does, as far as these tests can tell.
+    fn copy_tree(from: &Path, to: &Path) -> Result<(), Problem> {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target)?;
+            } else {
+                fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+        Ok(())
+    }
+
+    fn version_in(app: &Path) -> String {
+        fs::read_to_string(app.join("Contents/version")).unwrap()
+    }
+
+    #[test]
+    fn the_application_is_found_at_the_top_of_its_disk_image() {
+        let image = crate::archive::tests::scratch("image");
+        bundle(
+            &image.join("Noctorium.app"),
+            &[("Contents/Info.plist", "<plist/>")],
+        );
+        // The link to /Applications a disk image carries, which here is a plain folder: what matters is
+        // that it is not an application.
+        fs::create_dir_all(image.join("Applications")).unwrap();
+        assert_eq!(app_in(&image), Some(image.join("Noctorium.app")));
+
+        let renamed = crate::archive::tests::scratch("renamed");
+        bundle(
+            &renamed.join("Noctorium 1.0.app"),
+            &[("Contents/Info.plist", "<plist/>")],
+        );
+        fs::create_dir_all(renamed.join("Applications")).unwrap();
+        assert_eq!(app_in(&renamed), Some(renamed.join("Noctorium 1.0.app")));
+
+        let two = crate::archive::tests::scratch("two");
+        bundle(&two.join("One.app"), &[("Contents/Info.plist", "")]);
+        bundle(&two.join("Two.app"), &[("Contents/Info.plist", "")]);
+        assert_eq!(app_in(&two), None, "two applications are not one");
+
+        let empty = crate::archive::tests::scratch("empty");
+        assert_eq!(app_in(&empty), None);
+    }
+
+    #[test]
+    fn a_first_install_makes_the_folder_it_goes_in() {
+        let here = crate::archive::tests::scratch("first");
+        let image = here.join("image");
+        bundle(&image.join("Noctorium.app"), &[("Contents/version", "new")]);
+        let folder = here.join("Users/sam/Applications");
+
+        let installed =
+            replace_app(&image.join("Noctorium.app"), &folder, &copy_tree).expect("installs");
+        assert_eq!(installed, folder.join("Noctorium.app"));
+        assert_eq!(version_in(&installed), "new");
+    }
+
+    /// The case the swap exists for: an upgrade leaves nothing of the old version, and nothing of itself.
+    #[test]
+    fn replacing_an_older_application_leaves_nothing_of_it() {
+        let here = crate::archive::tests::scratch("upgrade");
+        let folder = here.join("Applications");
+        bundle(
+            &folder.join("Noctorium.app"),
+            &[
+                ("Contents/version", "old"),
+                ("Contents/app/old-only.jar", "stale"),
+            ],
+        );
+        let image = here.join("image");
+        bundle(&image.join("Noctorium.app"), &[("Contents/version", "new")]);
+
+        let installed =
+            replace_app(&image.join("Noctorium.app"), &folder, &copy_tree).expect("upgrades");
+        assert_eq!(version_in(&installed), "new");
+        assert!(
+            !installed.join("Contents/app/old-only.jar").exists(),
+            "a jar the new version does not have must not survive the upgrade"
+        );
+        assert!(!folder.join("Noctorium.app.old").exists());
+        assert!(!folder.join("Noctorium.app.partial").exists());
+        assert!(
+            image.join("Noctorium.app/Contents/version").is_file(),
+            "the disk image is copied from, never moved out of"
+        );
+    }
+
+    /// A copy that fails half way -- a full disk, an image that will not read -- must never leave the Mac
+    /// without the Noctorium it had.
+    #[test]
+    fn a_copy_that_fails_leaves_the_installed_application_as_it_was() {
+        let here = crate::archive::tests::scratch("failed");
+        let folder = here.join("Applications");
+        bundle(
+            &folder.join("Noctorium.app"),
+            &[("Contents/version", "old")],
+        );
+        let image = here.join("image");
+        bundle(&image.join("Noctorium.app"), &[("Contents/version", "new")]);
+
+        let half_then_fail = |from: &Path, to: &Path| -> Result<(), Problem> {
+            copy_tree(from, to)?;
+            Err(Problem::Local(
+                "ditto could not copy: No space left on device".into(),
+            ))
+        };
+        let outcome = replace_app(&image.join("Noctorium.app"), &folder, &half_then_fail);
+        assert!(matches!(outcome, Err(Problem::Local(why)) if why.contains("No space")));
+        assert_eq!(version_in(&folder.join("Noctorium.app")), "old");
+        assert!(!folder.join("Noctorium.app.partial").exists());
+        assert!(!folder.join("Noctorium.app.old").exists());
+    }
+
+    /// Whatever an earlier run left half done is cleared away first, rather than copied into or over.
+    #[test]
+    fn leftovers_of_an_earlier_run_are_cleared_first() {
+        let here = crate::archive::tests::scratch("leftovers");
+        let folder = here.join("Applications");
+        bundle(
+            &folder.join("Noctorium.app.partial"),
+            &[("Contents/half", "x")],
+        );
+        bundle(
+            &folder.join("Noctorium.app.old"),
+            &[("Contents/version", "older")],
+        );
+        let image = here.join("image");
+        bundle(&image.join("Noctorium.app"), &[("Contents/version", "new")]);
+
+        let installed = replace_app(&image.join("Noctorium.app"), &folder, &copy_tree).unwrap();
+        assert_eq!(version_in(&installed), "new");
+        assert!(!installed.join("Contents/half").exists());
+        assert!(!folder.join("Noctorium.app.partial").exists());
+        assert!(!folder.join("Noctorium.app.old").exists());
     }
 
     #[test]
@@ -1100,5 +1865,26 @@ mod tests {
             how_to_start(Method::CliLinux, &places, true),
             "Run noctorium in a terminal."
         );
+
+        let mac = mac_places();
+        let start = how_to_start(Method::MacDiskImage, &mac, true);
+        assert!(start.contains("Launchpad or Spotlight"), "{start}");
+        // Joined with a backslash where the tests run on Windows.
+        if !cfg!(windows) {
+            assert!(
+                start.contains("open /Applications/Noctorium.app"),
+                "{start}"
+            );
+        }
+        assert_eq!(
+            how_to_start(Method::CliMac, &mac, true),
+            "Run noctorium in a terminal."
+        );
+        let new_terminal = how_to_start(Method::CliMac, &mac, false);
+        assert!(
+            new_terminal.contains("Open a new terminal"),
+            "{new_terminal}"
+        );
+        assert!(new_terminal.contains(".zprofile"), "{new_terminal}");
     }
 }

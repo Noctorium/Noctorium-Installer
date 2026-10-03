@@ -7,7 +7,7 @@
 //! off when output is not a terminal, when NO_COLOR is set, or when asked.
 
 use crate::flow::{self, Format, Found, Offer, Options, Plan, Products, Step};
-use crate::github::{Asset, Problem};
+use crate::github::{Arch, Asset, Problem};
 use crate::install::Method;
 use crate::system::{Asking, Os};
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -31,7 +31,8 @@ Usage: noctorium-installer-cli [options]
   -h, --help            this
 
   auto is the distribution's own package where it is Debian, Ubuntu, Fedora, openSUSE or Arch, or one of
-  their relatives, and the AppImage everywhere else.
+  their relatives, and the AppImage everywhere else. Windows has its installer and a Mac its disk image,
+  for Apple silicon or Intel as the Mac is, and neither takes --format.
 
 Environment:
   GITHUB_TOKEN          raises GitHub's rate limit
@@ -265,11 +266,21 @@ impl From<Problem> for Failure {
 }
 
 fn run(args: &Args, term: &Term) -> Result<(), Failure> {
-    if cfg!(windows) && !matches!(args.format, None | Some(Format::Auto)) {
-        return Err(Failure::Usage(
-            "There is only one way to install Noctorium on Windows, so --format is for Linux."
-                .into(),
-        ));
+    // Refused before GitHub is asked anything: this is a mistake in the command, and finding it out after
+    // a round trip would be finding it out late. `auto` is what these systems do anyway, so it is let be.
+    let this_system = if cfg!(windows) {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else {
+        Os::Linux
+    };
+    if let Some(name) = flow::only_one_way(this_system) {
+        if !matches!(args.format, None | Some(Format::Auto)) {
+            return Err(Failure::Usage(format!(
+                "There is only one way to install Noctorium on {name}, so --format is for Linux."
+            )));
+        }
     }
     let interactive = !args.yes;
     term.banner();
@@ -335,10 +346,13 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
 fn show_found(term: &Term, found: &Found) {
     let system = &found.system;
     let mut parts = vec![system.describe()];
-    if let Some(arch) = system.arch {
-        parts.push(arch.describe().to_string());
-    } else {
-        parts.push(system.arch_name.to_string());
+    match (system.os, system.arch) {
+        // As Apple says it, which is how a Mac's owner knows it: About This Mac says Chip or Processor,
+        // not an instruction set.
+        (Os::MacOs, Some(Arch::Aarch64)) => parts.push("Apple silicon".into()),
+        (Os::MacOs, Some(Arch::X86_64)) => parts.push("Intel".into()),
+        (_, Some(arch)) => parts.push(arch.describe().to_string()),
+        (_, None) => parts.push(system.arch_name.to_string()),
     }
     if system.os == Os::Linux {
         let mut tools: Vec<&str> = system
@@ -406,11 +420,7 @@ fn show_files(term: &Term, found: &Found) {
 
 fn cli_asset(found: &Found) -> Option<&Asset> {
     let arch = found.system.arch?;
-    let wanted = match found.system.os {
-        Os::Windows => Method::CliWindows,
-        _ => Method::CliLinux,
-    }
-    .wanted();
+    let wanted = Method::cli_for(found.system.os).wanted();
     found.release.asset_for(wanted, arch)
 }
 

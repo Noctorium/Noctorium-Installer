@@ -1,0 +1,247 @@
+name: macOS
+
+# Everything a Mac is given: Noctorium as a disk image for Apple silicon and one for Intel, the Noctorium CLI
+# for each, and the terminal installer as one program for both. Called by release.yml for a release and by
+# packaging.yml to try it without one.
+#
+# Nobody working on Noctorium has a Mac, so these runners are where it is checked that it works on one, and
+# the checks go further than anywhere else in the pipeline. The disk image is installed the way a person
+# installs it -- opened, Noctorium.app dragged into Applications -- and then asked to test itself: the
+# bundled mpv and yt-dlp have to start, the Keychain has to keep a secret, and embedded Chromium has to come
+# up and fetch a page. Then it is opened like any application, has to put a window on the screen and stay
+# running, and has to quit when macOS asks it to. A picture of the screen is kept from each run.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'The version to call it, without the leading v'
+        required: true
+        type: string
+      desktop_ref:
+        required: false
+        type: string
+        default: 'main'
+      cli_ref:
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Noctorium for macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # jpackage packages for the machine it runs on and no other, so each architecture has its own
+          # runner. macos-15-intel is GitHub's last Intel image.
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    env:
+      VERSION: ${{ inputs.version }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Desktop
+          ref: ${{ inputs.desktop_ref }}
+          submodules: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The token is only for the GitHub API's anonymous limit, asked once each for mpv and yt-dlp.
+      - name: Package
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./gradlew macDmg -PappVersion="${VERSION#v}" --stacktrace
+
+      - name: Install it the way a person would
+        run: |
+          set -euo pipefail
+          dmg="build/compose/binaries/main/dmg/Noctorium-${VERSION#v}-macos-$ARCH.dmg"
+          ls -la "$dmg"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          ls -la "$mount"
+          test -L "$mount/Applications"
+          rm -rf /Applications/Noctorium.app
+          ditto "$mount/Noctorium.app" /Applications/Noctorium.app
+          hdiutil detach "$mount"
+          app=/Applications/Noctorium.app
+          shown=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          echo "Finder shows version $shown"
+          test "$shown" = "${VERSION#v}"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          echo "launcher: $(lipo -archs "$app/Contents/MacOS/Noctorium")"
+          echo "mpv:      $(lipo -archs "$app/Contents/app/resources/bin/mpv.app/Contents/MacOS/mpv")"
+          echo "yt-dlp:   $(lipo -archs "$app/Contents/app/resources/bin/yt-dlp")"
+          # What Gatekeeper makes of it, for the record: an ad-hoc signature is not a developer identity, so
+          # this says rejected, and a downloaded copy is asked about once.
+          spctl --assess --verbose=4 "$app" || true
+
+      - name: Test itself
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          /Applications/Noctorium.app/Contents/MacOS/Noctorium --self-test 2>&1 | tee selftest.txt
+          grep -q 'SELFTEST PASSED' selftest.txt
+
+      - name: Open a window, keep running, and quit when asked
+        run: |
+          set -euo pipefail
+          running() { pgrep -f 'Noctorium.app/Contents/MacOS/Noctorium' > /dev/null; }
+          open -a /Applications/Noctorium.app
+          sleep 40
+          running || { echo 'Noctorium is not running forty seconds after it was opened'; exit 1; }
+          screencapture -x "noctorium-$ARCH.png" || true
+          # Quit as the menu does, through an Apple event, which is what Noctorium's quit handler answers;
+          # a plain TERM if this runner will not send one.
+          osascript -e 'tell application "Noctorium" to quit' || pkill -TERM -f 'Noctorium.app/Contents/MacOS/Noctorium'
+          for _ in $(seq 1 30); do running || break; sleep 1; done
+          if running; then echo 'Still running thirty seconds after being asked to quit'; exit 1; fi
+          if pgrep -x mpv > /dev/null; then echo 'mpv was left playing'; exit 1; fi
+
+      - name: The disk image, for the release
+        run: |
+          mkdir -p out
+          cp "build/compose/binaries/main/dmg/Noctorium-${VERSION#v}-macos-$ARCH.dmg" out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+      # stage-* is never published: these are for looking at, not for downloading.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage-macos-checks-${{ matrix.arch }}
+          path: |
+            noctorium-*.png
+            selftest.txt
+          if-no-files-found: ignore
+
+  cli:
+    name: Noctorium CLI for macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ inputs.version }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-cli
+          ref: ${{ inputs.cli_ref }}
+          submodules: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test and package
+        run: ./gradlew test cliArchive -PappVersion="${VERSION#v}" --stacktrace
+
+      - name: It runs, and says its version
+        run: |
+          set -euo pipefail
+          out=$(build/package/noctorium-cli/bin/noctorium version)
+          echo "$out"
+          echo "$out" | grep -q "${VERSION#v}"
+          # Started through a link, as the installer puts it on PATH: the launcher has to find its folder.
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -sf "$PWD/build/package/noctorium-cli/bin/noctorium" "$RUNNER_TEMP/bin/noctorium"
+          "$RUNNER_TEMP/bin/noctorium" version | grep -q "${VERSION#v}"
+
+      # The player itself, in a terminal: macOS's script gives it one. It has to have drawn its screen
+      # before anything is pressed, and leave when q is.
+      - name: It draws in a terminal
+        env:
+          # Nothing is played, so mpv is stood in for; and its things go in a folder of the run's own.
+          NOCTORIUM_MPV_PATH: /usr/bin/true
+          NOCTORIUM_CLI_HOME: ${{ runner.temp }}/cli-home
+          TERM: xterm-256color
+        run: |
+          set -euo pipefail
+          ( sleep 15; if grep -a -q NOCTORIUM tui.log; then touch drawn-before-q; fi; printf 'q' ) \
+            | perl -e 'alarm 120; exec @ARGV' script -q /dev/null build/package/noctorium-cli/bin/noctorium > tui.log 2>&1
+          test -f drawn-before-q || { echo 'Nothing was drawn'; tail -c 2000 tui.log; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-macos-${{ matrix.arch }}
+          path: build/dist/*
+          if-no-files-found: error
+
+  installer:
+    name: Terminal installer for macOS
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pc
+      - run: cargo test --no-default-features
+        working-directory: pc
+      # One program for both kinds of Mac, so the one-line installer has one file to fetch and nothing to
+      # get wrong about which machine it is on.
+      - name: Build it for both, and join them
+        working-directory: pc
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --no-default-features --bin noctorium-installer-cli --target "$target"
+          done
+          mkdir -p ../out
+          lipo -create -output ../out/noctorium-installer-cli-macos \
+            target/aarch64-apple-darwin/release/noctorium-installer-cli \
+            target/x86_64-apple-darwin/release/noctorium-installer-cli
+          codesign --force --sign - ../out/noctorium-installer-cli-macos
+          lipo -archs ../out/noctorium-installer-cli-macos
+      - name: Ask it what it is, and what Mac it is on
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cli=out/noctorium-installer-cli-macos
+          "$cli" -V
+          "$cli" --help > /dev/null
+          status=0; "$cli" --not-an-option 2> /dev/null || status=$?
+          test "$status" = 2
+          # This runner is Apple silicon, and the installer has to say so -- run natively, and under
+          # Rosetta, where the process itself would claim to be Intel.
+          "$cli" --list --no-color | tee list.txt
+          grep -q 'Apple silicon' list.txt
+          if arch -x86_64 /usr/bin/true 2> /dev/null; then
+            arch -x86_64 "$cli" --list --no-color | grep -q 'Apple silicon'
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pc-installer-macos
+          path: out/*
+          if-no-files-found: error

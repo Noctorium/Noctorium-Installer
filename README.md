@@ -1,9 +1,9 @@
 # Noctorium releases
 
-This is where Noctorium is published: the Windows installer, the Android APK, and for Linux a Debian
-package, an RPM, an Arch package, an AppImage and a Flatpak, with a `SHA256SUMS.txt` beside them. The
-applications check here for updates. The player itself is elsewhere — the desktop is
-[Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop), the phone is
+This is where Noctorium is published: the Windows installer, the Android APK, a disk image for each kind
+of Mac, and for Linux a Debian package, an RPM, an Arch package, an AppImage and a Flatpak, with a
+`SHA256SUMS.txt` beside them. The applications check here for updates. The player itself is elsewhere —
+the desktop is [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop), the phone is
 [Noctorium-Mobile](https://github.com/Noctorium/Noctorium-Mobile), and what they share is
 [Noctorium-Base](https://github.com/Noctorium/Noctorium-Base).
 
@@ -25,7 +25,7 @@ irm https://noctorium.vercel.app/install | iex                # Windows, in Powe
 ```
 
 ```bash
-curl -fsSL https://noctorium.vercel.app/install | sh          # Linux
+curl -fsSL https://noctorium.vercel.app/install | sh          # Linux and macOS, in a terminal
 ```
 
 Options for the installer, [listed below](#the-terminal-installer), go after either. `iex` has no way to
@@ -52,20 +52,24 @@ curl -fsSL https://raw.githubusercontent.com/Noctorium/Noctorium-Installer/main/
 They are `scripts/install.ps1` and `scripts/install.sh`, served from this repository's main branch. Either
 refuses to run a download that does not match its checksum, and hands back the installer's exit status —
 in PowerShell as `$LASTEXITCODE`, because it returns rather than calling `exit`, which through `iex` would
-close the window. `.github/workflows/scripts.yml` runs both against the real latest release whenever they change.
+close the window. `install.sh` fetches the Linux installer on Linux and the Mac's on a Mac, which is one
+file for Apple silicon and Intel alike. `.github/workflows/scripts.yml` runs both against the real latest
+release whenever they change.
 
 | | Where | Built from |
 | --- | --- | --- |
 | `Noctorium-Installer-windows-x64.exe` | Windows, in a window | `pc/`, in Rust |
 | `Noctorium-Installer-x86_64.AppImage`, or the bare `noctorium-installer-linux-x64` | Linux, in a window | `pc/` |
 | `noctorium-installer-cli-windows-x64.exe`, `noctorium-installer-cli-linux-x64` | A terminal, on either | `pc/` |
+| `noctorium-installer-cli-macos` | A terminal on a Mac, Apple silicon or Intel: one universal file | `pc/` |
 | `Noctorium-Installer-android.apk` | Android | `phone/`, in Dart with Flutter |
 
 None of them installs a package itself. The PC ones run the Windows installer, or hand the package to the
 distribution's own package manager — `apt`, `dnf`, `zypper` or `pacman` — so dependencies are resolved
 rather than merely reported. What has no package manager, they put in place themselves, for the person
 running them and nobody else: an AppImage in `~/Applications` with a menu entry, a Flatpak bundle handed
-to `flatpak install --user`, the Noctorium CLI unpacked into a folder of its own. The phone one hands the
+to `flatpak install --user`, the Noctorium CLI unpacked into a folder of its own. On a Mac, Noctorium.app
+is copied out of its disk image into `/Applications`, as dragging it there would. The phone one hands the
 APK to Android's own package installer, which shows its own screen and asks again — and the first time
 sends you to a settings page to allow it at all.
 
@@ -81,16 +85,17 @@ first thing anybody sees of Noctorium, usually before they have any reason to tr
 of scrolling text is not what somebody who has just downloaded a music player expects. On Linux the window
 has one more row, for the format, which starts on whatever this machine would pick. The window program
 still installs in the terminal behind `--cli`, taking every default without asking, and does so by itself
-on a machine with no display — over ssh, say, where `DISPLAY` and `WAYLAND_DISPLAY` are both unset.
+on a machine with no display — over ssh, say, where `DISPLAY` and `WAYLAND_DISPLAY` are both unset. There
+is no window one for a Mac: the one-line script and the terminal installer are how a Mac installs.
 
 ### The terminal installer
 
 `noctorium-installer-cli` is the same installer for a terminal: cmd, PowerShell and Windows Terminal on
-Windows, anything on Linux. It says what it found — the machine, the distribution, its package manager,
-the release — asks which product and, on Linux, which format, shows the file and the exact command it is
-about to run, and asks once more before it downloads anything. Every question has a default, and `--yes`
-takes them all, so the same program serves somebody at a prompt and a script installing Noctorium on a
-row of machines.
+Windows, anything on Linux or a Mac. It says what it found — the machine, the distribution, its package
+manager, the release — asks which product and, on Linux, which format, shows the file and the exact
+command it is about to run, and asks once more before it downloads anything. Every question has a
+default, and `--yes` takes them all, so the same program serves somebody at a prompt and a script
+installing Noctorium on a row of machines.
 
 ```
   ♫ Noctorium  installer 1.2.0
@@ -138,11 +143,23 @@ agent running to ask on its behalf, and over ssh there usually is not one. With 
 tries `pkexec` first. Run as root it asks for nothing — and warns, if that root came from `sudo`, that an
 AppImage, a Flatpak or the CLI would then be installed for root rather than for you.
 
+The Mac one is a single universal file, and never asks for a password. It asks the kernel which
+processor the Mac has rather than trusting which half of itself is running, so an Apple silicon Mac gets
+the Apple silicon Noctorium even from a Terminal running under Rosetta. Noctorium.app goes into
+`/Applications` when this account can write there, which any administrator can, and otherwise into
+`~/Applications`, which the plan says before anything happens. An older copy is replaced whole — the new
+one is copied in beside it and swapped in, so a failure leaves the old one as it was — and if Noctorium
+is open, it says so and changes nothing. The disk image is opened out of sight and always closed again,
+and the quarantine flag is taken off what was installed: the download was checked against the release's
+checksum, which answers the question Gatekeeper would otherwise stop to ask.
+
 The **Noctorium CLI** — the player in a terminal, when a release carries it — is installed for you alone:
 on Windows into `%LOCALAPPDATA%\Programs\Noctorium CLI`, which is added to your PATH (open a new terminal
-afterwards; one already open keeps the old PATH), and on Linux into `~/.local/share/noctorium-cli`, with
-`~/.local/bin/noctorium` linked to it. A newer one replaces an older one whole. A release that does not
-carry it yet says so, and installs nothing.
+afterwards; one already open keeps the old PATH), and on Linux and on a Mac into
+`~/.local/share/noctorium-cli`, with `~/.local/bin/noctorium` linked to it. macOS does not put
+`~/.local/bin` on PATH by itself, so on a Mac where it is not there already the installer adds one line to
+`~/.zprofile`, under `# Added by the Noctorium installer`, once; open a new terminal afterwards. A newer
+one replaces an older one whole. A release that does not carry it yet says so, and installs nothing.
 
 ### Building them
 
@@ -152,7 +169,17 @@ cd phone && flutter test && flutter build apk      # the phone installer
 
 # The terminal installer alone, without the window toolkit, as the release builds it for Linux
 cd pc && cargo build --release --no-default-features --bin noctorium-installer-cli --target x86_64-unknown-linux-musl
+
+# And for a Mac, on a Mac with Xcode's command line tools: both processors, joined into one universal file
+cd pc && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+cargo build --release --no-default-features --bin noctorium-installer-cli --target aarch64-apple-darwin
+cargo build --release --no-default-features --bin noctorium-installer-cli --target x86_64-apple-darwin
+lipo -create -output noctorium-installer-cli-macos \
+  target/aarch64-apple-darwin/release/noctorium-installer-cli target/x86_64-apple-darwin/release/noctorium-installer-cli
 ```
+
+The window toolkit is left out of a Mac build altogether, so `cargo build` and `cargo test` work there
+too; the window program it makes is the terminal installer under another name, and is not published.
 
 Building the window one on Linux needs the headers it is drawn with, which a desktop usually has already,
 and the static terminal one needs musl's compiler wrapper and the target:
@@ -167,13 +194,19 @@ sudo apt-get install musl-tools && rustup target add x86_64-unknown-linux-musl
 | Platform | File |
 | --- | --- |
 | Windows | `Noctorium-<version>-windows-x64-setup.exe`, or the `.msi` for deployment |
+| Mac with Apple silicon | `Noctorium-<version>-macos-arm64.dmg` |
+| Mac with Intel | `Noctorium-<version>-macos-x64.dmg` |
 | Debian, Ubuntu, Mint | `noctorium_<version>_amd64.deb` |
 | Fedora, RHEL, openSUSE | `noctorium-<version>.x86_64.rpm` |
 | Arch, Manjaro, EndeavourOS | `noctorium-<version>-1-x86_64.pkg.tar.zst` |
 | Any Linux | `Noctorium-<version>-x86_64.AppImage` |
 | Any Linux with Flatpak | `Noctorium-<version>-x86_64.flatpak` |
 | Android | `Noctorium-<version>.apk` |
-| The Noctorium CLI | `noctorium-cli-<version>-windows-x64.zip`, `noctorium-cli-<version>-linux-x64.tar.gz`, in the releases that carry it |
+| The Noctorium CLI | `noctorium-cli-<version>-windows-x64.zip`, `noctorium-cli-<version>-linux-x64.tar.gz`, `noctorium-cli-<version>-macos-arm64.tar.gz`, `noctorium-cli-<version>-macos-x64.tar.gz`, in the releases that carry it |
+
+On a Mac, take the disk image for its processor — Apple menu, About This Mac, says Chip for Apple silicon
+and Processor for Intel — open it, and drag Noctorium into Applications. The installers do the same and
+pick the right one by themselves.
 
 On Linux, **take your distribution's own package when there is one**: the package manager installs what
 it needs, knows it is there, and removes it cleanly. The Arch package installs to `/opt/noctorium` like the
@@ -212,6 +245,12 @@ program holds open.
 
 ```
 sha256sum --check --ignore-missing SHA256SUMS.txt
+```
+
+A Mac has `shasum` rather than `sha256sum`; one file at a time, with its line from the listing:
+
+```
+grep -- '-macos-arm64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
 ```
 
 The APK is signed with Noctorium's release key, certificate SHA-256 fingerprint:

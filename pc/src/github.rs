@@ -94,9 +94,10 @@ impl fmt::Display for Problem {
 
 /// The processor a file is built for.
 ///
-/// Every release so far is x86-64 only, but the names already say so -- `amd64` in a .deb, `x86_64` in an
-/// rpm, `x64` on Windows -- and matching on that word is what stops an ARM machine, the day there are ARM
-/// builds beside these, from earnestly downloading one it cannot run.
+/// Windows and Linux are published for x86-64 only, but the names already say so -- `amd64` in a .deb,
+/// `x86_64` in an rpm, `x64` on Windows -- and matching on that word is what stops an ARM machine, the day
+/// there are ARM builds beside these, from earnestly downloading one it cannot run. A Mac has both, `arm64`
+/// and `x64`, and the same word is what hands each its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arch {
     X86_64,
@@ -134,7 +135,8 @@ impl Arch {
         }
     }
 
-    /// Windows' word, which the Noctorium CLI's archives use on both systems.
+    /// Windows' word, which the Noctorium CLI's archives use on every system and the Mac's disk images
+    /// use too.
     fn windows(self) -> &'static str {
         match self {
             Arch::X86_64 => "x64",
@@ -156,10 +158,13 @@ impl Arch {
 /// Windows takes the `.exe`, which is the installer most people expect to double click; the `.msi` is
 /// left for whoever is deploying it by hand. Linux takes whichever format was chosen -- the caller decides
 /// that from the distribution and from what the person asked for, rather than this guessing from names.
+/// A Mac takes the disk image for its processor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wanted {
     /// `Noctorium-<version>-windows-x64-setup.exe`
     WindowsSetup,
+    /// `Noctorium-<version>-macos-arm64.dmg`, or `-macos-x64.dmg` for an Intel Mac.
+    MacDiskImage,
     /// `noctorium_<version>_amd64.deb`
     DebianPackage,
     /// `noctorium-<version>.x86_64.rpm`, for Fedora, RHEL and openSUSE alike.
@@ -174,6 +179,8 @@ pub enum Wanted {
     CliWindows,
     /// `noctorium-cli-<version>-linux-x64.tar.gz`
     CliLinux,
+    /// `noctorium-cli-<version>-macos-arm64.tar.gz`, or `-macos-x64.tar.gz`.
+    CliMac,
 }
 
 impl Wanted {
@@ -184,6 +191,7 @@ impl Wanted {
                 "noctorium-",
                 format!("-windows-{}-setup.exe", arch.windows()),
             ),
+            Wanted::MacDiskImage => ("noctorium-", format!("-macos-{}.dmg", arch.windows())),
             Wanted::DebianPackage => ("noctorium_", format!("_{}.deb", arch.debian())),
             Wanted::RpmPackage => ("noctorium-", format!(".{}.rpm", arch.kernel())),
             Wanted::ArchPackage => ("noctorium-", format!("-{}.pkg.tar.zst", arch.kernel())),
@@ -195,6 +203,10 @@ impl Wanted {
             Wanted::CliLinux => (
                 "noctorium-cli-",
                 format!("-linux-{}.tar.gz", arch.windows()),
+            ),
+            Wanted::CliMac => (
+                "noctorium-cli-",
+                format!("-macos-{}.tar.gz", arch.windows()),
             ),
         }
     }
@@ -210,7 +222,9 @@ impl Wanted {
             _ => after,
         };
         let before = match self {
-            Wanted::WindowsSetup | Wanted::AppImage | Wanted::Flatpak => "Noctorium-",
+            Wanted::WindowsSetup | Wanted::MacDiskImage | Wanted::AppImage | Wanted::Flatpak => {
+                "Noctorium-"
+            }
             _ => before,
         };
         format!("{before}<version>{after}")
@@ -325,6 +339,50 @@ mod tests {
       ]
     }"#;
 
+    /// A release with Macs in it: everything 0.7 carried, the disk images and CLI archives for both kinds of
+    /// Mac, and the Mac's terminal installer, which is one universal file for both.
+    const RELEASE_WITH_MACS: &str = r#"{
+      "tag_name": "v0.8.0",
+      "assets": [
+        {"name": "Noctorium-0.8.0-windows-x64-setup.exe", "browser_download_url": "https://example.test/setup.exe", "size": 340636160},
+        {"name": "Noctorium-0.8.0-windows-x64.msi", "browser_download_url": "https://example.test/x.msi", "size": 339905750},
+        {"name": "Noctorium-0.8.0.apk", "browser_download_url": "https://example.test/x.apk", "size": 17600515},
+        {"name": "noctorium_0.8.0_amd64.deb", "browser_download_url": "https://example.test/x.deb", "size": 251486386},
+        {"name": "noctorium-0.8.0.x86_64.rpm", "browser_download_url": "https://example.test/x.rpm", "size": 264015322},
+        {"name": "noctorium-0.8.0-1-x86_64.pkg.tar.zst", "browser_download_url": "https://example.test/x.zst", "size": 250000000},
+        {"name": "Noctorium-0.8.0-x86_64.AppImage", "browser_download_url": "https://example.test/x.AppImage", "size": 260000000},
+        {"name": "Noctorium-0.8.0-x86_64.flatpak", "browser_download_url": "https://example.test/x.flatpak", "size": 270000000},
+        {"name": "Noctorium-0.8.0-macos-arm64.dmg", "browser_download_url": "https://example.test/arm64.dmg", "size": 255000000},
+        {"name": "Noctorium-0.8.0-macos-x64.dmg", "browser_download_url": "https://example.test/x64.dmg", "size": 258000000},
+        {"name": "noctorium-cli-0.8.0-windows-x64.zip", "browser_download_url": "https://example.test/cli.zip", "size": 60000000},
+        {"name": "noctorium-cli-0.8.0-linux-x64.tar.gz", "browser_download_url": "https://example.test/cli.tgz", "size": 61000000},
+        {"name": "noctorium-cli-0.8.0-macos-arm64.tar.gz", "browser_download_url": "https://example.test/cli-arm64.tgz", "size": 59000000},
+        {"name": "noctorium-cli-0.8.0-macos-x64.tar.gz", "browser_download_url": "https://example.test/cli-x64.tgz", "size": 60500000},
+        {"name": "Noctorium-Installer-windows-x64.exe", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-cli-windows-x64.exe", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-linux-x64", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-cli-linux-x64", "browser_download_url": "u", "size": 1},
+        {"name": "Noctorium-Installer-x86_64.AppImage", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-cli-macos", "browser_download_url": "u", "size": 1},
+        {"name": "Noctorium-Installer-android.apk", "browser_download_url": "u", "size": 1},
+        {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.test/SHA256SUMS.txt", "size": 1607}
+      ]
+    }"#;
+
+    /// Every file this ever looks for.
+    const EVERY_WANTED: &[Wanted] = &[
+        Wanted::WindowsSetup,
+        Wanted::MacDiskImage,
+        Wanted::DebianPackage,
+        Wanted::RpmPackage,
+        Wanted::ArchPackage,
+        Wanted::AppImage,
+        Wanted::Flatpak,
+        Wanted::CliWindows,
+        Wanted::CliLinux,
+        Wanted::CliMac,
+    ];
+
     fn picked(release: &Release, wanted: Wanted, arch: Arch) -> Option<&str> {
         release.asset_for(wanted, arch).map(|a| a.name.as_str())
     }
@@ -381,26 +439,95 @@ mod tests {
         );
     }
 
-    /// Everything published so far is x86-64. An ARM machine must find nothing rather than something.
+    /// Everything 0.7 published is x86-64. An ARM machine must find nothing rather than something.
     #[test]
     fn an_arm_machine_takes_nothing_built_for_x86() {
         let release = Release::from_json(RELEASE).expect("should parse");
-        for wanted in [
-            Wanted::WindowsSetup,
-            Wanted::DebianPackage,
-            Wanted::RpmPackage,
-            Wanted::ArchPackage,
-            Wanted::AppImage,
-            Wanted::Flatpak,
-            Wanted::CliWindows,
-            Wanted::CliLinux,
-        ] {
+        for &wanted in EVERY_WANTED {
             assert_eq!(
                 picked(&release, wanted, Arch::Aarch64),
                 None,
                 "{wanted:?} picked an x86-64 file for ARM"
             );
         }
+    }
+
+    #[test]
+    fn each_kind_of_mac_takes_the_files_built_for_it() {
+        let release = Release::from_json(RELEASE_WITH_MACS).expect("should parse");
+        assert_eq!(release.assets.len(), 22);
+        assert_eq!(
+            picked(&release, Wanted::MacDiskImage, Arch::Aarch64),
+            Some("Noctorium-0.8.0-macos-arm64.dmg")
+        );
+        assert_eq!(
+            picked(&release, Wanted::MacDiskImage, Arch::X86_64),
+            Some("Noctorium-0.8.0-macos-x64.dmg")
+        );
+        assert_eq!(
+            picked(&release, Wanted::CliMac, Arch::Aarch64),
+            Some("noctorium-cli-0.8.0-macos-arm64.tar.gz")
+        );
+        assert_eq!(
+            picked(&release, Wanted::CliMac, Arch::X86_64),
+            Some("noctorium-cli-0.8.0-macos-x64.tar.gz")
+        );
+    }
+
+    /// The whole table, for a release with every platform in it: each kind of file on each processor is
+    /// answered by exactly the one file it should be, or by nothing -- never by an installer, never by
+    /// another platform's file, and never by two files at once, since `asset_for` takes the first that
+    /// fits and a second would be a coin toss decided by the order GitHub lists them in.
+    #[test]
+    fn in_a_release_with_every_platform_each_file_answers_only_for_its_own() {
+        let release = Release::from_json(RELEASE_WITH_MACS).expect("should parse");
+        let expected = |wanted: Wanted, arch: Arch| -> Option<&'static str> {
+            match (wanted, arch) {
+                (Wanted::MacDiskImage, Arch::Aarch64) => Some("Noctorium-0.8.0-macos-arm64.dmg"),
+                (Wanted::CliMac, Arch::Aarch64) => Some("noctorium-cli-0.8.0-macos-arm64.tar.gz"),
+                // Nothing else is built for ARM yet.
+                (_, Arch::Aarch64) => None,
+                (Wanted::WindowsSetup, _) => Some("Noctorium-0.8.0-windows-x64-setup.exe"),
+                (Wanted::MacDiskImage, _) => Some("Noctorium-0.8.0-macos-x64.dmg"),
+                (Wanted::DebianPackage, _) => Some("noctorium_0.8.0_amd64.deb"),
+                (Wanted::RpmPackage, _) => Some("noctorium-0.8.0.x86_64.rpm"),
+                (Wanted::ArchPackage, _) => Some("noctorium-0.8.0-1-x86_64.pkg.tar.zst"),
+                (Wanted::AppImage, _) => Some("Noctorium-0.8.0-x86_64.AppImage"),
+                (Wanted::Flatpak, _) => Some("Noctorium-0.8.0-x86_64.flatpak"),
+                (Wanted::CliWindows, _) => Some("noctorium-cli-0.8.0-windows-x64.zip"),
+                (Wanted::CliLinux, _) => Some("noctorium-cli-0.8.0-linux-x64.tar.gz"),
+                (Wanted::CliMac, _) => Some("noctorium-cli-0.8.0-macos-x64.tar.gz"),
+            }
+        };
+        for arch in [Arch::X86_64, Arch::Aarch64] {
+            for &wanted in EVERY_WANTED {
+                let matching: Vec<&str> = release
+                    .assets
+                    .iter()
+                    .filter(|asset| wanted.matches(&asset.name, arch))
+                    .map(|asset| asset.name.as_str())
+                    .collect();
+                let expected: Vec<&str> = expected(wanted, arch).into_iter().collect();
+                assert_eq!(matching, expected, "{wanted:?} on {arch:?}");
+            }
+        }
+    }
+
+    /// The Mac's names share their shape with the others' -- `-x64` with Windows, `.tar.gz` with Linux --
+    /// and the word for the system is all that tells them apart.
+    #[test]
+    fn a_mac_file_is_never_taken_for_another_systems_or_the_other_way_round() {
+        let x64 = Arch::X86_64;
+        assert!(!Wanted::CliLinux.matches("noctorium-cli-1.0.0-macos-x64.tar.gz", x64));
+        assert!(!Wanted::CliMac.matches("noctorium-cli-1.0.0-linux-x64.tar.gz", x64));
+        assert!(!Wanted::WindowsSetup.matches("Noctorium-1.0.0-macos-x64.dmg", x64));
+        assert!(
+            !Wanted::MacDiskImage.matches("noctorium-cli-1.0.0-macos-x64.dmg", x64),
+            "the terminal player is never the desktop application"
+        );
+        assert!(!Wanted::MacDiskImage.matches("Noctorium-1.0.0-macos-arm64.dmg", x64));
+        assert!(!Wanted::MacDiskImage.matches("Noctorium-1.0.0-macos-x64.dmg.sha256", x64));
+        assert!(!Wanted::CliMac.matches("noctorium-cli-1.0.0-macos-x64.tar.gz", Arch::Aarch64));
     }
 
     #[test]
@@ -414,6 +541,8 @@ mod tests {
         assert!(Wanted::WindowsSetup.matches("Noctorium-1.0.0-windows-arm64-setup.exe", arm));
         assert!(Wanted::CliWindows.matches("noctorium-cli-1.0.0-windows-arm64.zip", arm));
         assert!(Wanted::CliLinux.matches("noctorium-cli-1.0.0-linux-arm64.tar.gz", arm));
+        assert!(Wanted::MacDiskImage.matches("Noctorium-1.0.0-macos-arm64.dmg", arm));
+        assert!(Wanted::CliMac.matches("noctorium-cli-1.0.0-macos-arm64.tar.gz", arm));
 
         // And the other way round: an x86-64 machine is not handed an ARM file because the rest of the
         // name fits.
@@ -479,6 +608,18 @@ mod tests {
             Wanted::CliLinux.pattern(x64),
             "noctorium-cli-<version>-linux-x64.tar.gz"
         );
+        assert_eq!(
+            Wanted::MacDiskImage.pattern(Arch::Aarch64),
+            "Noctorium-<version>-macos-arm64.dmg"
+        );
+        assert_eq!(
+            Wanted::MacDiskImage.pattern(x64),
+            "Noctorium-<version>-macos-x64.dmg"
+        );
+        assert_eq!(
+            Wanted::CliMac.pattern(Arch::Aarch64),
+            "noctorium-cli-<version>-macos-arm64.tar.gz"
+        );
     }
 
     #[test]
@@ -497,7 +638,6 @@ mod tests {
     /// The installer is attached to the same release as the application, so it has to skip itself.
     #[test]
     fn the_installer_never_picks_itself() {
-        let x64 = Arch::X86_64;
         for name in [
             "Noctorium-Installer-windows-x64.exe",
             "noctorium-installer-cli-windows-x64.exe",
@@ -505,15 +645,18 @@ mod tests {
             "noctorium-installer-cli-linux-x64",
             "Noctorium-Installer-x86_64.AppImage",
             "Noctorium-Installer-1.0.0-x86_64.AppImage",
+            "noctorium-installer-cli-macos",
+            // Shaped exactly like what a Mac wants, but for the word in the middle.
+            "Noctorium-Installer-1.0.0-macos-arm64.dmg",
+            "noctorium-installer-cli-1.0.0-macos-arm64.tar.gz",
         ] {
-            for wanted in [
-                Wanted::WindowsSetup,
-                Wanted::DebianPackage,
-                Wanted::AppImage,
-                Wanted::CliWindows,
-                Wanted::CliLinux,
-            ] {
-                assert!(!wanted.matches(name, x64), "{wanted:?} matched {name}");
+            for arch in [Arch::X86_64, Arch::Aarch64] {
+                for &wanted in EVERY_WANTED {
+                    assert!(
+                        !wanted.matches(name, arch),
+                        "{wanted:?} on {arch:?} matched {name}"
+                    );
+                }
             }
         }
     }

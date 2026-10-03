@@ -17,6 +17,8 @@ name = "noctorium_installer"
 path = "src/lib.rs"
 
 # The window. Built only with the gui feature, which is on by default -- a plain `cargo build` makes both.
+# On a Mac it is built without a window at all, because the toolkit is left out there (below), and is then
+# the terminal installer under another name; the release ships only noctorium-installer-cli for a Mac.
 [[bin]]
 name = "noctorium-installer"
 path = "src/main.rs"
@@ -51,6 +53,7 @@ tar = { version = "0.4", default-features = false }
 # Reading and the plain deflate that every zip tool writes. The rest of the defaults -- AES, bzip2, zstd,
 # lzma -- would triple the size of the program for archives nobody makes.
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
+
 # The window. Immediate mode, so the whole interface is a function of the progress reported so far and
 # there is no widget tree to keep in step with a download running on another thread.
 #
@@ -58,10 +61,17 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 # tree, because somebody using a screen reader has to be able to install a music player too. Left out is
 # the web backend and the persistence that would write a window position into somebody's config
 # directory -- this program runs once and should leave nothing behind.
+#
+# Not on a Mac. There is no window installer for one -- a Mac gets the terminal installer, fetched by the
+# one-line script -- so the toolkit would be some ninety crates compiled for nothing. Leaving it out here
+# rather than behind --no-default-features means a plain `cargo build` or `cargo test` on a Mac works too.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"], optional = true }
 
 # geteuid, which is the only honest answer to "is this root": USER and HOME are whatever the environment
-# says, and sudo, su and a container all say different things.
+# says, and sudo, su and a container all say different things. On a Mac, also sysctl, which says what the
+# processor really is when this program is running under Rosetta, and access, which says whether
+# /Applications can be written to.
 [target."cfg(unix)".dependencies]
 libc = "0.2"
 

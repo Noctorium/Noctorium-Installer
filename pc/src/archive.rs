@@ -190,7 +190,7 @@ pub fn launcher_in(folder: &Path, windows: bool) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-fn remove_if_there(folder: &Path) -> Result<(), Problem> {
+pub(crate) fn remove_if_there(folder: &Path) -> Result<(), Problem> {
     if folder.exists() {
         fs::remove_dir_all(folder).map_err(|e| couldnt("clear away", folder, e))?;
     }

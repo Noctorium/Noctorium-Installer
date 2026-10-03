@@ -1,8 +1,8 @@
 name: Release
 
-# Builds the things people install -- a Windows installer, an Android APK, and for Linux a .deb, an .rpm,
-# an Arch package, an AppImage and a Flatpak -- from the application repositories, and publishes them
-# here. This repository is where releases live and what the in-app updater watches; it holds no
+# Builds the things people install -- a Windows installer, an Android APK, for Linux a .deb, an .rpm,
+# an Arch package, an AppImage and a Flatpak, and for the Mac a disk image for Apple silicon and one for
+# Intel -- from the application repositories, and publishes them here. This repository is where releases live and what the in-app updater watches; it holds no
 # application code of its own, only the installers and the packaging in packaging/.
 #
 # jpackage cannot cross-build. It reads the JDK it is running on and produces a package for that machine
@@ -135,6 +135,17 @@ jobs:
     with:
       version: ${{ inputs.version || github.ref_name }}
       desktop_ref: ${{ inputs.desktop_ref || github.ref_name }}
+
+  # Both disk images, the Noctorium CLI for both kinds of Mac and the Mac terminal installer, each installed
+  # and tried on a Mac before it is accepted. See macos.yml.
+  macos:
+    name: macOS
+    needs: verify
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+      desktop_ref: ${{ inputs.desktop_ref || github.ref_name }}
+      cli_ref: ${{ inputs.cli_ref || github.ref_name }}
 
   android:
     name: Android APK
@@ -291,7 +302,7 @@ jobs:
     name: Publish the release
     # linux is linux.yml: the .deb, the .rpm, the Arch package, the AppImage and the Flatpak, every one of
     # which has to succeed. pc-installer is both systems' window and terminal installers.
-    needs: [windows, linux, android, cli, pc-installer, phone-installer]
+    needs: [windows, linux, macos, android, cli, pc-installer, phone-installer]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -341,8 +352,10 @@ jobs:
             | Arch, Manjaro, EndeavourOS | `noctorium-*-1-x86_64.pkg.tar.zst`, for `pacman -U` |
             | Any Linux | `Noctorium-*-x86_64.AppImage`: mark it executable and run it |
             | Any Linux with Flatpak | `Noctorium-*-x86_64.flatpak`: `flatpak install --user --bundle` |
+            | macOS, Apple silicon | `Noctorium-*-macos-arm64.dmg`: open it and drag Noctorium into Applications |
+            | macOS, Intel | `Noctorium-*-macos-x64.dmg` |
             | Android | `Noctorium-*.apk` |
-            | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz` |
+            | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, `noctorium-cli-*-macos-arm64.tar.gz`, `noctorium-cli-*-macos-x64.tar.gz` |
 
             Or take an installer instead, which fetches whichever release is latest at the time and
             checks it before it runs it:
@@ -351,15 +364,21 @@ jobs:
             | --- | --- | --- |
             | Windows | `Noctorium-Installer-windows-x64.exe` | `noctorium-installer-cli-windows-x64.exe` |
             | Linux | `Noctorium-Installer-x86_64.AppImage`, or `noctorium-installer-linux-x64` | `noctorium-installer-cli-linux-x64` |
+            | macOS | the disk image is the installer | `noctorium-installer-cli-macos`, for Apple silicon and Intel |
             | Android | `Noctorium-Installer-android.apk` | |
 
             The terminal installer asks which product and which format, or takes `--yes` and the
             defaults; `--help` says the rest.
 
             The desktop packages carry their own Java runtime and their own copy of Chromium for the
-            sign-in window, which is why they are large. The Windows packages carry mpv and yt-dlp as
-            well, and so does the Flatpak, which brings its own mpv into its sandbox. The .deb, the .rpm,
+            sign-in window, which is why they are large. The Windows packages and the Mac disk images carry
+            mpv and yt-dlp as well, and so does the Flatpak, which brings its own mpv into its sandbox. The .deb, the .rpm,
             the Arch package and the AppImage play through the distribution's mpv -- the Arch package
             depends on it, and for the rest it is one `apt install mpv` or the like.
+
+            Noctorium is not signed with an Apple developer identity, so macOS asks once before opening a
+            copy downloaded in a browser: if it says it cannot check it, open System Settings, Privacy &
+            Security, and choose Open Anyway. The one-line installer, `curl -fsSL
+            https://noctorium.vercel.app/install | sh`, installs it without that question.
 
             `SHA256SUMS.txt` lists the checksum of every file above.

@@ -1,8 +1,8 @@
 name: Packaging
 
-# Every Linux format and every PC installer, built as a release would build them, and attached to the run
-# rather than to a release. This is how the packaging is tried: push a branch named packaging/something,
-# or run it by hand from the Actions tab against any branch or commit of the desktop.
+# Every Linux format, everything for the Mac and every PC installer, built as a release would build them,
+# and attached to the run rather than to a release. This is how the packaging is tried: push a branch named
+# packaging/something, or run it by hand from the Actions tab against any branch or commit of the desktop.
 #
 # The tests, the Windows installer and the APK are left out. They are release.yml's, unchanged by any of
 # this, and twenty minutes of Windows packaging is not what anybody trying an Arch package is waiting for.
@@ -13,6 +13,10 @@ on:
     inputs:
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
+        required: false
+        default: 'main'
+      cli_ref:
+        description: 'Noctorium-cli branch, tag or commit to build (for the Mac)'
         required: false
         default: 'main'
       version:
@@ -63,3 +67,12 @@ jobs:
   pc-installer:
     name: PC installer
     uses: ./.github/workflows/pc-installer.yml
+
+  macos:
+    name: macOS
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      desktop_ref: ${{ inputs.desktop_ref || 'main' }}
+      cli_ref: ${{ inputs.cli_ref || 'main' }}

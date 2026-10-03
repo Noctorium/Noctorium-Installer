@@ -10,8 +10,13 @@
 //! to trust it, and a console window full of scrolling text is not what somebody who has just downloaded
 //! a music player is expecting. The terminal version is `noctorium-installer-cli`, built from the same
 //! library; this one still falls back to it behind `--cli`, and on a machine with no display at all.
+//!
+//! A Mac is always the second case. There is no window for one -- the toolkit is not even built there,
+//! see Cargo.toml -- so on a Mac this program is the terminal installer under another name, and the
+//! release ships only `noctorium-installer-cli` for it.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(not(target_os = "macos"))]
 mod gui;
 
 use noctorium_installer::cli::{self, Launch};
@@ -49,7 +54,7 @@ fn main() -> ExitCode {
 
     let console = said("--cli") || said("--console");
     if !console && there_is_a_display() {
-        match gui::run() {
+        match open_window() {
             Ok(true) => return ExitCode::SUCCESS,
             // The window was closed without Noctorium being installed -- either it failed, and the
             // window said why, or somebody thought better of it. Neither is worth repeating here.
@@ -77,13 +82,30 @@ fn main() -> ExitCode {
 
 /// Whether there is anything to put a window on.
 ///
-/// Windows always has one. Elsewhere this is the difference between a desktop and an ssh session, and
-/// getting it wrong means a program that appears to do nothing at all.
+/// Windows always has one. On Linux this is the difference between a desktop and an ssh session, and
+/// getting it wrong means a program that appears to do nothing at all. A Mac never has one for this
+/// program, whatever DISPLAY says -- XQuartz sets it -- because the window is not built there.
 fn there_is_a_display() -> bool {
     if cfg!(windows) {
         return true;
     }
+    if cfg!(target_os = "macos") {
+        return false;
+    }
     std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+/// Opens the window and returns whether Noctorium ended up installed.
+#[cfg(not(target_os = "macos"))]
+fn open_window() -> Result<bool, String> {
+    gui::run()
+}
+
+/// Never reached, since a Mac has no display as far as this program is concerned; here so that the one
+/// place a window is opened does not have to be written twice.
+#[cfg(target_os = "macos")]
+fn open_window() -> Result<bool, String> {
+    Err("there is no window installer for macOS".into())
 }
 
 /// Puts this program's output back into the terminal it was started from.

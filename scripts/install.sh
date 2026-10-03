@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs Noctorium on Linux, from a terminal:
+# Installs Noctorium on Linux or a Mac, from a terminal:
 #
 #   curl -fsSL https://noctorium.vercel.app/install | sh
 #
@@ -7,36 +7,41 @@
 #
 #   curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product cli --yes
 #
-# It fetches the terminal installer, noctorium-installer-cli-linux-x64, from the latest release, checks it
-# against the SHA256SUMS.txt published beside it, and runs it with those options. The installer then says
-# what it found and asks before it changes anything; --help lists what else it takes. Its exit status is
-# this script's: 0 when it did what was asked, 1 when it did not, 2 when the options were not understood.
+# It fetches the terminal installer from the latest release -- noctorium-installer-cli-linux-x64 on Linux,
+# noctorium-installer-cli-macos on a Mac, one file for Apple silicon and Intel alike -- checks it against
+# the SHA256SUMS.txt published beside it, and runs it with those options. The installer then says what it
+# found and asks before it changes anything; --help lists what else it takes. Its exit status is this
+# script's: 0 when it did what was asked, 1 when it did not, 2 when the options were not understood.
 #
-# Plain POSIX sh, because it is piped into whatever sh is -- dash, on Debian and Ubuntu. Everything happens
-# in main, called on the last line, so a download cut short defines half a function and runs nothing.
+# Plain POSIX sh, because it is piped into whatever sh is -- dash on Debian and Ubuntu, and on a Mac a bash
+# from 2006 standing in for it. Everything happens in main, called on the last line, so a download cut
+# short defines half a function and runs nothing.
 
-asset=noctorium-installer-cli-linux-x64
 sums=SHA256SUMS.txt
 
 main() {
     colour "$@"
 
-    case $(uname -s) in
-        Linux) ;;
+    system=$(uname -s)
+    case $system in
+        Linux)
+            case $(uname -m) in
+                x86_64 | amd64) ;;
+                *)
+                    fail "Noctorium is built for x86_64 only, and this machine is $(uname -m)."
+                    return 1 ;;
+            esac
+            asset=noctorium-installer-cli-linux-x64 ;;
         Darwin)
-            fail "There is no macOS build of Noctorium yet."
-            return 1 ;;
+            # One file for every Mac: a universal binary, which runs natively on Apple silicon and on Intel
+            # alike, so uname -m is not asked -- and under Rosetta it would say x86_64 on an Apple silicon
+            # Mac anyway. Which Noctorium the Mac gets is the installer's to work out, from the kernel.
+            asset=noctorium-installer-cli-macos ;;
         MINGW* | MSYS* | CYGWIN*)
-            fail "This is the installer for Linux. On Windows, in PowerShell: irm https://noctorium.vercel.app/install | iex"
+            fail "This is the installer for Linux and macOS. On Windows, in PowerShell: irm https://noctorium.vercel.app/install | iex"
             return 1 ;;
         *)
-            fail "Noctorium is built for Linux and Windows, and this is $(uname -s)."
-            return 1 ;;
-    esac
-    case $(uname -m) in
-        x86_64 | amd64) ;;
-        *)
-            fail "Noctorium is built for x86_64 only, and this machine is $(uname -m)."
+            fail "Noctorium is built for Linux, macOS and Windows, and this is $system."
             return 1 ;;
     esac
 
@@ -100,6 +105,12 @@ main() {
     fi
     good "Checked against $sums: it matches."
     chmod +x "$tmp/$asset"
+    # curl and wget do not set the quarantine flag a browser does, so on a Mac there is normally nothing to
+    # take off. If there is, Gatekeeper would refuse to run the installer -- it has no Developer ID behind
+    # it, only the checksum just checked -- so it comes off, and its absence is not worth a word.
+    if [ "$system" = Darwin ]; then
+        xattr -d com.apple.quarantine "$tmp/$asset" 2> /dev/null || :
+    fi
 
     # Piped from curl, standard input is this script, not the keyboard, and the installer's questions
     # would read the end of it. The terminal is still there as /dev/tty -- when there is one: [ -r ] says
@@ -152,7 +163,8 @@ download() {
     fi
 }
 
-# Read from standard input, so no tool has a file name to quote or escape in what it prints back.
+# Read from standard input, so no tool has a file name to quote or escape in what it prints back. A Mac
+# has shasum, and no sha256sum unless somebody installed one; both print the hash first, then a space.
 sha256() {
     if have sha256sum; then
         sha256sum < "$1" | cut -d ' ' -f 1

@@ -40,10 +40,11 @@
         $global:LASTEXITCODE = 1
     }
 
-    # PowerShell 7 runs on Linux and macOS too, where the Windows installer is of no use.
+    # PowerShell 7 runs on Linux and macOS too, where the Windows installer is of no use. Both have their
+    # own one line, the same one.
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         if (Get-Variable -Name IsMacOS -ValueOnly -ErrorAction SilentlyContinue) {
-            Fail 'There is no macOS build of Noctorium yet.'
+            Fail 'This is the installer for Windows. On a Mac, in Terminal: curl -fsSL https://noctorium.vercel.app/install | sh'
         } else {
             Fail 'This is the installer for Windows. On Linux, in a terminal: curl -fsSL https://noctorium.vercel.app/install | sh'
         }
