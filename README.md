@@ -39,6 +39,16 @@ pass any on, so on Windows the line becomes a script block:
 curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product cli --yes
 ```
 
+If noctorium.vercel.app is ever down, the same scripts come straight from this repository:
+
+```powershell
+irm https://raw.githubusercontent.com/Noctorium/Noctorium-Installer/main/scripts/install.ps1 | iex
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Noctorium/Noctorium-Installer/main/scripts/install.sh | sh
+```
+
 They are `scripts/install.ps1` and `scripts/install.sh`, served from this repository's main branch. Either
 refuses to run a download that does not match its checksum, and hands back the installer's exit status —
 in PowerShell as `$LASTEXITCODE`, because it returns rather than calling `exit`, which through `iex` would
