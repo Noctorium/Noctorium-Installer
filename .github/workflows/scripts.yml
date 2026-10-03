@@ -1,0 +1,119 @@
+name: Install scripts
+
+# The one-line installers in scripts/: install.ps1 for `irm https://noctorium.vercel.app/install | iex` in
+# PowerShell, and install.sh for `curl -fsSL https://noctorium.vercel.app/install | sh`. Each is run here
+# the way it is run there, against the real latest release, as far as a dry run goes: the terminal
+# installer fetched, checked against SHA256SUMS.txt, and asked what it would do. Nothing is installed on
+# the runners.
+on:
+  push:
+    branches: [main]
+    paths: ['scripts/**', '.github/workflows/scripts.yml']
+  pull_request:
+    paths: ['scripts/**', '.github/workflows/scripts.yml']
+  workflow_dispatch:
+
+# Nothing here publishes anything, so it needs to read and no more.
+permissions:
+  contents: read
+
+concurrency:
+  group: scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sh:
+    name: install.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # sh is dash on Ubuntu, which is what most people piping into sh will have: a bashism fails here.
+      - name: Parses as POSIX sh
+        run: sh -n scripts/install.sh
+      - name: ShellCheck
+        run: shellcheck --shell=sh scripts/install.sh
+
+      # --yes as well, because with --product both the installer asks which format on Linux, and a runner
+      # has nobody to answer. A dry run with --yes still stops before anything is downloaded.
+      - name: Run it as a file
+        run: sh scripts/install.sh --dry-run --yes --product both --no-color
+
+      # The way curl | sh runs it: the script on standard input, the options after -s --. A runner has no
+      # terminal, so this is also the path where /dev/tty cannot be opened and the installer is run as it is.
+      - name: Run it piped
+        run: cat scripts/install.sh | sh -s -- --dry-run --product cli --no-color
+
+      # A typo is the installer's 2, and it has to come back out of the script as 2.
+      - name: The installer's exit status comes back
+        run: |
+          status=0
+          sh scripts/install.sh --dry-run --not-an-option 2> /dev/null || status=$?
+          echo "exit status $status"
+          test "$status" = 2
+
+  powershell:
+    name: install.ps1 (${{ matrix.shell }})
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      # Windows PowerShell 5.1 and PowerShell 7 differ in exactly the places this script is careful about,
+      # so one failing should not hide the other's result.
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Which PowerShell
+        run: $PSVersionTable.PSVersion.ToString()
+
+      # The form that takes options. Invoke-Expression has no way to pass any on.
+      - name: Run it as a script block with options
+        run: |
+          & ([scriptblock]::Create((Get-Content -Raw scripts/install.ps1))) --dry-run --product both --no-color
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 left LASTEXITCODE at $LASTEXITCODE, not 0" }
+
+      # The installer's 2 for a typo has to reach $LASTEXITCODE, and the lines after it have to run: the
+      # script returns rather than calling exit, which through iex would close the window it was typed into.
+      - name: The installer's exit status comes back, and the session carries on
+        run: |
+          & ([scriptblock]::Create((Get-Content -Raw scripts/install.ps1))) --dry-run --not-an-option
+          if ($LASTEXITCODE -ne 2) { throw "install.ps1 left LASTEXITCODE at $LASTEXITCODE, not 2" }
+          Write-Host 'Still running after the installer failed.'
+          $global:LASTEXITCODE = 0
+
+      # irm | iex itself, through Invoke-Expression, which runs the text in this session's own scope. With
+      # no options it would ask which product to install, so it is pointed at a repository with no release:
+      # that goes through all of the script up to the download, which fails, and never reaches an installer.
+      # What is checked is what only iex can break: that it returns, says so in $LASTEXITCODE, and leaves
+      # none of its variables or functions behind.
+      - name: Run it through Invoke-Expression
+        env:
+          NOCTORIUM_REPOSITORY: Noctorium/no-such-repository
+        run: |
+          Get-Content -Raw scripts/install.ps1 | Invoke-Expression
+          if ($LASTEXITCODE -ne 1) { throw "install.ps1 left LASTEXITCODE at $LASTEXITCODE, not 1" }
+          $left = @(Get-Variable asset, sums, options, plain, repository, base, folder, installer -ErrorAction SilentlyContinue) +
+            @(Get-Command Say, Fail -ErrorAction SilentlyContinue)
+          if ($left) { throw "install.ps1 left behind: $($left.Name -join ', ')" }
+          $global:LASTEXITCODE = 0
+
+      # Write-Host is on purpose: what the script says is for the person at the prompt, in colour, and has
+      # no business in the pipeline of whoever ran it.
+      - name: PSScriptAnalyzer
+        if: matrix.shell == 'pwsh'
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Warning, Error -ExcludeRule PSAvoidUsingWriteHost
+          $findings | Format-Table RuleName, Severity, Line, Message -AutoSize -Wrap
+          if ($findings) { throw "PSScriptAnalyzer has $(@($findings).Count) finding(s)" }

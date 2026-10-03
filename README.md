@@ -16,6 +16,34 @@ Small programs that do one thing: ask GitHub what the latest release is, fetch t
 they are on, check it against the checksum published beside it, and hand it to whatever installs software
 there. They are what somebody downloads once. Everything after that is the application's own updater.
 
+From a terminal, not even that: one line fetches the terminal installer from the latest release, checks it
+against `SHA256SUMS.txt`, and runs it — and the installer says what it found and asks before it changes
+anything.
+
+```powershell
+irm https://noctorium.vercel.app/install | iex                # Windows, in PowerShell
+```
+
+```bash
+curl -fsSL https://noctorium.vercel.app/install | sh          # Linux
+```
+
+Options for the installer, [listed below](#the-terminal-installer), go after either. `iex` has no way to
+pass any on, so on Windows the line becomes a script block:
+
+```powershell
+& ([scriptblock]::Create((irm https://noctorium.vercel.app/install))) --product cli --yes
+```
+
+```bash
+curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product cli --yes
+```
+
+They are `scripts/install.ps1` and `scripts/install.sh`, served from this repository's main branch. Either
+refuses to run a download that does not match its checksum, and hands back the installer's exit status —
+in PowerShell as `$LASTEXITCODE`, because it returns rather than calling `exit`, which through `iex` would
+close the window. `.github/workflows/scripts.yml` runs both against the real latest release whenever they change.
+
 | | Where | Built from |
 | --- | --- | --- |
 | `Noctorium-Installer-windows-x64.exe` | Windows, in a window | `pc/`, in Rust |
