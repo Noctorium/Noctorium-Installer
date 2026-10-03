@@ -235,10 +235,15 @@ jobs:
           test "$status" = 2
           # This runner is Apple silicon, and the installer has to say so -- run natively, and under
           # Rosetta, where the process itself would claim to be Intel.
-          "$cli" --list --no-color | tee list.txt
+          # Into a file and then searched: grep -q stops reading at the first match, and a program still
+          # writing into a pipe nobody reads any more is killed for it.
+          "$cli" --list --no-color > list.txt
+          cat list.txt
           grep -q 'Apple silicon' list.txt
           if arch -x86_64 /usr/bin/true 2> /dev/null; then
-            arch -x86_64 "$cli" --list --no-color | grep -q 'Apple silicon'
+            arch -x86_64 "$cli" --list --no-color > list-rosetta.txt
+            grep 'System' list-rosetta.txt
+            grep -q 'Apple silicon' list-rosetta.txt
           fi
       - uses: actions/upload-artifact@v4
         with:
