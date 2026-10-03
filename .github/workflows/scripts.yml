@@ -55,6 +55,27 @@ jobs:
           echo "exit status $status"
           test "$status" = 2
 
+  # The same script on a Mac, where sh is an old bash and there is no sha256sum, so the checksum is taken with
+  # shasum instead. It fetches noctorium-installer-cli-macos and asks it what it would install.
+  mac:
+    name: install.sh (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run it as a file
+        run: sh scripts/install.sh --dry-run --yes --product both --no-color
+      - name: Run it piped
+        run: cat scripts/install.sh | sh -s -- --dry-run --yes --product cli --no-color
+      - name: The installer's exit status comes back
+        run: |
+          status=0
+          sh scripts/install.sh --dry-run --not-an-option 2> /dev/null || status=$?
+          echo "exit status $status"
+          test "$status" = 2
+
   powershell:
     name: install.ps1 (${{ matrix.shell }})
     runs-on: windows-latest
