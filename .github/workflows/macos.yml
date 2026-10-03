@@ -178,8 +178,12 @@ jobs:
       # before anything is pressed, and leave when q is.
       - name: It draws in a terminal
         env:
-          # Nothing is played, so mpv is stood in for; and its things go in a folder of the run's own.
+          # Nothing is played, so mpv and yt-dlp are stood in for -- otherwise the player's first start goes to
+          # fetch yt-dlp, and a shared runner is often over GitHub's limit for that -- and its things go in a
+          # folder of the run's own.
           NOCTORIUM_MPV_PATH: /usr/bin/true
+          NOCTORIUM_YTDLP_PATH: /usr/bin/true
+          LANG: en_US.UTF-8
           NOCTORIUM_CLI_HOME: ${{ runner.temp }}/cli-home
           TERM: xterm-256color
         # Not -e: the player's own exit status is checked below, after what it drew has been printed, rather
