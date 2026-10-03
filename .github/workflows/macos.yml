@@ -182,11 +182,16 @@ jobs:
           NOCTORIUM_MPV_PATH: /usr/bin/true
           NOCTORIUM_CLI_HOME: ${{ runner.temp }}/cli-home
           TERM: xterm-256color
+        # Not -e: the player's own exit status is checked below, after what it drew has been printed, rather
+        # than the shell leaving at the first thing that is not zero and saying nothing about why.
         run: |
-          set -euo pipefail
-          ( sleep 15; if grep -a -q NOCTORIUM tui.log; then touch drawn-before-q; fi; printf 'q' ) \
+          set +e
+          ( sleep 20; if grep -a -q NOCTORIUM tui.log; then touch drawn-before-q; fi; printf 'q' ) \
             | perl -e 'alarm 120; exec @ARGV' script -q /dev/null build/package/noctorium-cli/bin/noctorium > tui.log 2>&1
-          test -f drawn-before-q || { echo 'Nothing was drawn'; tail -c 2000 tui.log; exit 1; }
+          status=$?
+          grep -a -q NOCTORIUM tui.log || { echo 'The player drew nothing:'; cat -v tui.log | tail -40; exit 1; }
+          test -f drawn-before-q || { echo 'Nothing was drawn until a key was pressed'; cat -v tui.log | tail -40; exit 1; }
+          test "$status" -eq 0 || { echo "The player exited with $status"; cat -v tui.log | tail -40; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
