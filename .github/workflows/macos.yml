@@ -111,6 +111,33 @@ jobs:
           if running; then echo 'Still running thirty seconds after being asked to quit'; exit 1; fi
           if pgrep -x mpv > /dev/null; then echo 'mpv was left playing'; exit 1; fi
 
+      # The same, with embedded Chromium running, as it is after a sign-in: it has to be shut down before the
+      # process ends, or it can crash on the way out and macOS says Noctorium quit unexpectedly. Started by
+      # --start-chromium; a crash would leave a report in DiagnosticReports, or a helper still running.
+      - name: Quit cleanly with Chromium running, as after a sign-in
+        run: |
+          set -euo pipefail
+          running() { pgrep -f 'Noctorium.app/Contents/MacOS/Noctorium' > /dev/null; }
+          chromium() { pgrep -f 'jcef Helper' > /dev/null; }
+          crashes() { ls "$HOME/Library/Logs/DiagnosticReports" 2> /dev/null | grep -c -i -e noctorium -e jcef -e java || true; }
+          before=$(crashes)
+          open -a /Applications/Noctorium.app --args --start-chromium
+          for _ in $(seq 1 60); do chromium && break; sleep 2; done
+          chromium || { echo 'Chromium never started'; exit 1; }
+          sleep 10
+          osascript -e 'tell application "Noctorium" to quit' || pkill -TERM -f 'Noctorium.app/Contents/MacOS/Noctorium'
+          for _ in $(seq 1 30); do running || break; sleep 1; done
+          if running; then echo 'Still running thirty seconds after being asked to quit'; exit 1; fi
+          sleep 5
+          if chromium; then echo 'Chromium was left running'; exit 1; fi
+          after=$(crashes)
+          if [ "$after" -gt "$before" ]; then
+            echo 'macOS recorded a crash:'
+            ls -la "$HOME/Library/Logs/DiagnosticReports"
+            exit 1
+          fi
+          echo 'Quit cleanly, Chromium and all.'
+
       - name: The disk image, for the release
         run: |
           mkdir -p out
