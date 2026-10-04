@@ -28,7 +28,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.9.0'
+        default: '0.9.1'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
@@ -94,7 +94,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       # Msi and Exe are both produced: the .exe is what most people expect to double click, the .msi is
-      # what an administrator deploying it will ask for.
+      # what an administrator deploying it will ask for -- and, since 0.9.1, what Noctorium's own updater
+      # downloads on Windows and hands to msiexec. A release without the .msi has no update for Windows.
       # mpv and yt-dlp are fetched here and packaged inside the installer, so a fresh install can play
       # something without downloading anything first. The token is only to avoid the anonymous API rate
       # limit that every build on a shared runner shares.
@@ -346,7 +347,7 @@ jobs:
 
             | Platform | File |
             | --- | --- |
-            | Windows | `Noctorium-*-windows-x64-setup.exe`, or the `.msi` for deployment |
+            | Windows | `Noctorium-*-windows-x64-setup.exe`, or the `.msi` for deployment (it is also what the in-app updater takes) |
             | Debian, Ubuntu, Mint | `noctorium_*_amd64.deb` |
             | Fedora, RHEL, openSUSE | `noctorium-*.x86_64.rpm` |
             | Arch, Manjaro, EndeavourOS | `noctorium-*-1-x86_64.pkg.tar.zst`, for `pacman -U` |
