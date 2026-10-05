@@ -121,7 +121,7 @@ default, and `--yes` takes them all, so the same program serves somebody at a pr
 installing Noctorium on a row of machines.
 
 ```
-  ♫ Noctorium  installer 1.2.0
+  ♫ Noctorium  installer 1.3.0
 
   System    Ubuntu 24.04.1 LTS · x86-64 · apt, flatpak
   Release   v0.7.0 (the latest)
