@@ -247,7 +247,8 @@ pick the right one by themselves.
 
 On Linux, **take your distribution's own package when there is one**: the package manager installs what
 it needs, knows it is there, and removes it cleanly. The Arch package installs to `/opt/noctorium` like the
-others, with `noctorium` on PATH; `sudo pacman -U noctorium-<version>-1-x86_64.pkg.tar.zst`.
+others, with `noctorium-desktop` on PATH — `noctorium` is the Noctorium CLI's name, on Arch as everywhere
+else; `sudo pacman -U noctorium-<version>-1-x86_64.pkg.tar.zst`.
 
 Anywhere else, the **AppImage** runs as it is: mark it executable and start it, or let the installer put it
 in `~/Applications` and add it to the menu. It needs FUSE to mount itself, which most desktops have; where
