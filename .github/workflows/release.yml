@@ -95,7 +95,8 @@ jobs:
 
       # Msi and Exe are both produced: the .exe is what most people expect to double click, the .msi is
       # what an administrator deploying it will ask for -- and, since 0.9.1, what Noctorium's own updater
-      # downloads on Windows and hands to msiexec. A release without the .msi has no update for Windows.
+      # downloads on Windows and hands to msiexec, as the installers in pc/ now do too. A release without
+      # the .msi has no update for Windows, and its installers fall back to the .exe.
       # mpv and yt-dlp are fetched here and packaged inside the installer, so a fresh install can play
       # something without downloading anything first. The token is only to avoid the anonymous API rate
       # limit that every build on a shared runner shares.
@@ -347,7 +348,7 @@ jobs:
 
             | Platform | File |
             | --- | --- |
-            | Windows | `Noctorium-*-windows-x64-setup.exe`, or the `.msi` for deployment (it is also what the in-app updater takes) |
+            | Windows | `Noctorium-*-windows-x64-setup.exe` to double click, or the `.msi`, which is what the installers and the in-app updater take |
             | Debian, Ubuntu, Mint | `noctorium_*_amd64.deb` |
             | Fedora, RHEL, openSUSE | `noctorium-*.x86_64.rpm` |
             | Arch, Manjaro, EndeavourOS | `noctorium-*-1-x86_64.pkg.tar.zst`, for `pacman -U` |

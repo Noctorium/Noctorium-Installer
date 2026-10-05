@@ -76,9 +76,10 @@ eframe = { version = "0.32.3", default-features = false, features = ["accesskit"
 libc = "0.2"
 
 # The console, for colour and for borrowing the one the window program was started from; the registry,
-# for the user's PATH; and the broadcast that tells Explorer the PATH has changed.
+# for the user's PATH and for the folder Noctorium is already installed in; the broadcast that tells
+# Explorer the PATH has changed; and the list of running programs, to see whether Noctorium is one.
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 # Decodes the mark at build time, so the binary carries the pixels rather than a PNG decoder it would use
@@ -92,3 +93,24 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Except where the time goes. Every byte this program fetches is hashed, and the Noctorium CLI's archive is
+# inflated and checked against its CRC as it is unpacked: all of that is in these crates, and built for
+# size it runs at a fraction of the speed it can -- SHA-256 most of all, whose processor instructions are
+# only fast when they are inlined, which "z" declines to do. Measured on a Ryzen 5 7600, hashing 341 MB
+# went from 0.75 s to 0.20 s and unpacking the 60 MB Windows CLI archive from 0.54 s to 0.47 s, for 30 KB
+# more program: 7.7 KB of it SHA-256, the rest inflating. Everything else stays as small as it can be.
+[profile.release.package.sha2]
+opt-level = 3
+[profile.release.package.miniz_oxide]
+opt-level = 3
+[profile.release.package.flate2]
+opt-level = 3
+[profile.release.package.crc32fast]
+opt-level = 3
+[profile.release.package.adler2]
+opt-level = 3
+[profile.release.package.zip]
+opt-level = 3
+[profile.release.package.tar]
+opt-level = 3

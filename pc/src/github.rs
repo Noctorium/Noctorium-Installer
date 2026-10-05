@@ -155,12 +155,16 @@ impl Arch {
 
 /// Which file of a release this machine wants.
 ///
-/// Windows takes the `.exe`, which is the installer most people expect to double click; the `.msi` is
-/// left for whoever is deploying it by hand. Linux takes whichever format was chosen -- the caller decides
-/// that from the distribution and from what the person asked for, rather than this guessing from names.
-/// A Mac takes the disk image for its processor.
+/// Windows takes the `.msi`, which goes straight to Windows Installer. The `-setup.exe` beside it is that
+/// same .msi wrapped up: started, it writes the whole three hundred megabytes of it out to the temporary
+/// folder again before anything else happens -- and an antivirus reads every byte both times -- so it is
+/// only the way in for a release that has no .msi. Linux takes whichever format was chosen -- the caller
+/// decides that from the distribution and from what the person asked for, rather than this guessing from
+/// names. A Mac takes the disk image for its processor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wanted {
+    /// `Noctorium-<version>-windows-x64.msi`
+    WindowsMsi,
     /// `Noctorium-<version>-windows-x64-setup.exe`
     WindowsSetup,
     /// `Noctorium-<version>-macos-arm64.dmg`, or `-macos-x64.dmg` for an Intel Mac.
@@ -187,6 +191,7 @@ impl Wanted {
     /// What comes before the version and what comes after it, lowercased, for this architecture.
     fn shape(self, arch: Arch) -> (&'static str, String) {
         match self {
+            Wanted::WindowsMsi => ("noctorium-", format!("-windows-{}.msi", arch.windows())),
             Wanted::WindowsSetup => (
                 "noctorium-",
                 format!("-windows-{}-setup.exe", arch.windows()),
@@ -222,9 +227,11 @@ impl Wanted {
             _ => after,
         };
         let before = match self {
-            Wanted::WindowsSetup | Wanted::MacDiskImage | Wanted::AppImage | Wanted::Flatpak => {
-                "Noctorium-"
-            }
+            Wanted::WindowsMsi
+            | Wanted::WindowsSetup
+            | Wanted::MacDiskImage
+            | Wanted::AppImage
+            | Wanted::Flatpak => "Noctorium-",
             _ => before,
         };
         format!("{before}<version>{after}")
@@ -371,6 +378,7 @@ mod tests {
 
     /// Every file this ever looks for.
     const EVERY_WANTED: &[Wanted] = &[
+        Wanted::WindowsMsi,
         Wanted::WindowsSetup,
         Wanted::MacDiskImage,
         Wanted::DebianPackage,
@@ -400,9 +408,13 @@ mod tests {
         let release = Release::from_json(RELEASE).expect("should parse");
         let x64 = Arch::X86_64;
         assert_eq!(
+            picked(&release, Wanted::WindowsMsi, x64),
+            Some("Noctorium-0.7.0-windows-x64.msi")
+        );
+        assert_eq!(
             picked(&release, Wanted::WindowsSetup, x64),
             Some("Noctorium-0.7.0-windows-x64-setup.exe"),
-            "the .msi is for deployment, not for double clicking"
+            "the setup is still found, for a release that has no .msi"
         );
         assert_eq!(
             picked(&release, Wanted::DebianPackage, x64),
@@ -487,6 +499,7 @@ mod tests {
                 (Wanted::CliMac, Arch::Aarch64) => Some("noctorium-cli-0.8.0-macos-arm64.tar.gz"),
                 // Nothing else is built for ARM yet.
                 (_, Arch::Aarch64) => None,
+                (Wanted::WindowsMsi, _) => Some("Noctorium-0.8.0-windows-x64.msi"),
                 (Wanted::WindowsSetup, _) => Some("Noctorium-0.8.0-windows-x64-setup.exe"),
                 (Wanted::MacDiskImage, _) => Some("Noctorium-0.8.0-macos-x64.dmg"),
                 (Wanted::DebianPackage, _) => Some("noctorium_0.8.0_amd64.deb"),
@@ -539,6 +552,8 @@ mod tests {
         assert!(Wanted::AppImage.matches("Noctorium-1.0.0-aarch64.AppImage", arm));
         assert!(Wanted::Flatpak.matches("Noctorium-1.0.0-aarch64.flatpak", arm));
         assert!(Wanted::WindowsSetup.matches("Noctorium-1.0.0-windows-arm64-setup.exe", arm));
+        assert!(Wanted::WindowsMsi.matches("Noctorium-1.0.0-windows-arm64.msi", arm));
+        assert!(!Wanted::WindowsMsi.matches("Noctorium-1.0.0-windows-arm64.msi", Arch::X86_64));
         assert!(Wanted::CliWindows.matches("noctorium-cli-1.0.0-windows-arm64.zip", arm));
         assert!(Wanted::CliLinux.matches("noctorium-cli-1.0.0-linux-arm64.tar.gz", arm));
         assert!(Wanted::MacDiskImage.matches("Noctorium-1.0.0-macos-arm64.dmg", arm));
@@ -583,11 +598,21 @@ mod tests {
             "no version"
         );
         assert!(!Wanted::WindowsSetup.matches("Noctorium-1.0.0-windows-x64.msi", x64));
+        assert!(!Wanted::WindowsMsi.matches("Noctorium-1.0.0-windows-x64-setup.exe", x64));
+        assert!(!Wanted::WindowsMsi.matches("Noctorium-1.0.0-windows-x64.msi.sha256", x64));
+        assert!(
+            !Wanted::WindowsMsi.matches("noctorium-cli-1.0.0-windows-x64.msi", x64),
+            "the terminal player is never the desktop application"
+        );
     }
 
     #[test]
     fn the_patterns_read_the_way_the_release_names_its_files() {
         let x64 = Arch::X86_64;
+        assert_eq!(
+            Wanted::WindowsMsi.pattern(x64),
+            "Noctorium-<version>-windows-x64.msi"
+        );
         assert_eq!(
             Wanted::WindowsSetup.pattern(x64),
             "Noctorium-<version>-windows-x64-setup.exe"
@@ -626,6 +651,9 @@ mod tests {
     fn a_release_without_this_platform_says_so_rather_than_installing_the_wrong_thing() {
         let android_only = r#"{"tag_name":"v9","assets":[{"name":"Noctorium-9.apk","browser_download_url":"u","size":1}]}"#;
         let release = Release::from_json(android_only).expect("should parse");
+        assert!(release
+            .asset_for(Wanted::WindowsMsi, Arch::X86_64)
+            .is_none());
         assert!(release
             .asset_for(Wanted::WindowsSetup, Arch::X86_64)
             .is_none());

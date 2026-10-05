@@ -9,11 +9,12 @@
 //! The terminal shows the plan and asks; the window puts a button between them. Both get the same
 //! sequence and the same failures, which is the point of it living here rather than in either.
 
-use crate::fetch;
-use crate::github::{self, Arch, Asset, Problem, Release};
+use crate::fetch::{self, Fetched};
+use crate::github::{self, Arch, Asset, Problem, Release, Wanted};
 use crate::install::{self, Action, Method, Places};
 use crate::system::{self, Asking, Os, System};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 /// What can be installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,20 @@ impl Products {
             _ => None,
         }
     }
+
+    /// From a yes or no for each, which is how the window asks; nothing when both are no.
+    pub fn from_choice(desktop: bool, cli: bool) -> Option<Products> {
+        match (desktop, cli) {
+            (true, true) => Some(Products::Both),
+            (true, false) => Some(Products::Desktop),
+            (false, true) => Some(Products::Cli),
+            (false, false) => None,
+        }
+    }
+
+    pub fn includes(self, product: Product) -> bool {
+        self.each().contains(&product)
+    }
 }
 
 /// How the desktop application is to be installed on Linux. Windows and a Mac have one way each, which
@@ -96,7 +111,8 @@ impl Format {
             Method::Pacman => Format::Arch,
             Method::AppImage => Format::AppImage,
             Method::Flatpak => Format::Flatpak,
-            Method::WindowsSetup
+            Method::WindowsMsi
+            | Method::WindowsSetup
             | Method::MacDiskImage
             | Method::CliWindows
             | Method::CliLinux
@@ -112,6 +128,9 @@ pub struct Options {
     pub format: Format,
     /// Who will be asked for a password, which decides between pkexec and sudo.
     pub asking: Asking,
+    /// On Windows, the .msi's own wizard rather than a progress bar, for somebody who wants to choose the
+    /// folder it goes in. Nothing anywhere else.
+    pub wizard: bool,
 }
 
 impl Default for Options {
@@ -120,6 +139,7 @@ impl Default for Options {
             products: Products::Desktop,
             format: Format::Auto,
             asking: Asking::Window,
+            wizard: false,
         }
     }
 }
@@ -177,10 +197,13 @@ pub struct Offer {
 
 /// The ways the desktop application can be installed on this machine, best first.
 ///
-/// On Windows there is one, and on a Mac there is one, the disk image for its processor. On Linux there
-/// is the distribution's own package when its package manager is here, then the AppImage, which runs
-/// anywhere, then the Flatpak, which needs Flatpak. Each says whether this release carries it, so a menu
-/// can show what there is rather than offering something that will fail after the download.
+/// On Windows there is one, and on a Mac there is one, the disk image for its processor. Windows' one is
+/// the .msi, or for a release from before the .msi was published, the setup .exe -- which is the .msi
+/// again, wrapped, and is not offered beside it as a choice, because it only ever does the same thing
+/// slower. On Linux there is the distribution's own package when its package manager is here, then the
+/// AppImage, which runs anywhere, then the Flatpak, which needs Flatpak. Each says whether this release
+/// carries it, so a menu can show what there is rather than offering something that will fail after the
+/// download.
 pub fn offers(found: &Found) -> Vec<Offer> {
     let system = &found.system;
     let Some(arch) = system.arch else {
@@ -188,7 +211,16 @@ pub fn offers(found: &Found) -> Vec<Offer> {
     };
     let mut methods: Vec<(Method, Option<String>)> = Vec::new();
     match system.os {
-        Os::Windows => methods.push((Method::WindowsSetup, None)),
+        Os::Windows => {
+            let has = |wanted: Wanted| found.release.asset_for(wanted, arch).is_some();
+            let setup_only = !has(Wanted::WindowsMsi) && has(Wanted::WindowsSetup);
+            let method = if setup_only {
+                Method::WindowsSetup
+            } else {
+                Method::WindowsMsi
+            };
+            methods.push((method, None));
+        }
         Os::MacOs => methods.push((Method::MacDiskImage, None)),
         Os::Linux => {
             if let Some(manager) = system.package_manager {
@@ -227,6 +259,14 @@ pub fn offers(found: &Found) -> Vec<Offer> {
     offers
 }
 
+/// The Noctorium CLI's file in this release for this machine, if it carries one.
+pub fn cli_asset(found: &Found) -> Option<&Asset> {
+    let arch = found.system.arch?;
+    found
+        .release
+        .asset_for(Method::cli_for(found.system.os).wanted(), arch)
+}
+
 /// What is about to happen, settled before anything is downloaded.
 #[derive(Debug, Clone)]
 pub struct Plan {
@@ -235,6 +275,8 @@ pub struct Plan {
     pub latest: bool,
     pub items: Vec<Item>,
     pub places: Places,
+    /// Where the downloads go: [download_folder], except in a test.
+    pub downloads: PathBuf,
     /// Things worth saying before anything happens: a fallback that was taken, a warning about root.
     pub notes: Vec<String>,
 }
@@ -251,10 +293,51 @@ pub struct Item {
     pub escalation: Option<&'static str>,
     /// Where it is downloaded to.
     pub file: PathBuf,
+    /// How much of it an earlier run left in the download folder.
+    pub on_disk: OnDisk,
     /// What installing it takes, which is what gets shown before it is done.
     pub actions: Vec<Action>,
     /// What to say once it is in.
     pub start: String,
+}
+
+/// How much of a download is in the download folder already, from an earlier run: as far as its size
+/// says, which is all a plan looks at. Whether it is really the file is the checksum's to decide, when it
+/// is used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDisk {
+    Nothing,
+    /// A `.partial` of this many bytes, which the download carries on from.
+    Part(u64),
+    /// A file of the whole size, which is checked and used instead of being downloaded again.
+    Whole,
+}
+
+impl OnDisk {
+    /// What there is at [file] for a download of [size] bytes.
+    pub fn at(file: &Path, size: u64) -> OnDisk {
+        match std::fs::metadata(file) {
+            Ok(found) if found.is_file() && (size == 0 || found.len() == size) => {
+                return OnDisk::Whole
+            }
+            _ => {}
+        }
+        match fetch::already_have(file, size) {
+            0 => OnDisk::Nothing,
+            have => OnDisk::Part(have),
+        }
+    }
+}
+
+impl Item {
+    /// The bytes still to come down, as far as the plan can tell.
+    pub fn to_download(&self) -> u64 {
+        match self.on_disk {
+            OnDisk::Nothing => self.asset.size,
+            OnDisk::Part(have) => self.asset.size.saturating_sub(have),
+            OnDisk::Whole => 0,
+        }
+    }
 }
 
 impl Plan {
@@ -267,6 +350,11 @@ impl Plan {
         self.items.iter().map(|i| i.asset.megabytes()).sum()
     }
 
+    /// What is still to come down, which is less than [megabytes] when an earlier run left some of it.
+    pub fn megabytes_to_download(&self) -> f64 {
+        self.items.iter().map(|i| i.to_download()).sum::<u64>() as f64 / 1_048_576.0
+    }
+
     /// Whether going ahead will put a password prompt in front of somebody.
     pub fn needs_password(&self) -> bool {
         self.items.iter().any(|i| i.escalation.is_some())
@@ -274,7 +362,8 @@ impl Plan {
 }
 
 /// Where downloads go: a folder of this program's own, so a half-finished download is never left in the
-/// middle of somebody's Downloads folder.
+/// middle of somebody's Downloads folder -- and the same one every time, so the next run finds what this
+/// one left.
 pub fn download_folder() -> PathBuf {
     std::env::temp_dir().join("noctorium-installer")
 }
@@ -296,6 +385,7 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         ))
     })?;
     let listing = found.checksums.as_deref().ok_or(Problem::NoChecksums)?;
+    let downloads = download_folder();
 
     let mut notes = Vec::new();
     let mut items = Vec::new();
@@ -327,7 +417,12 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
 
         // Not said of the Windows installer, which asks its own questions, nor of a Mac application, which
         // root puts in the /Applications everybody shares rather than in a home folder of its own.
-        if !method.needs_root() && !matches!(method, Method::WindowsSetup | Method::MacDiskImage) {
+        if !method.needs_root()
+            && !matches!(
+                method,
+                Method::WindowsMsi | Method::WindowsSetup | Method::MacDiskImage
+            )
+        {
             if let Some(user) = &system.sudo_user {
                 notes.push(format!(
                     "This is running as root through sudo, so {} will be installed for root and not \
@@ -368,8 +463,39 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
             }
         }
 
-        let file = download_folder().join(&asset.name);
-        let mut actions = install::actions_for(method, &file, escalation, &found.places)?;
+        // Said because nobody would otherwise know: the folder a Windows install is in is not something
+        // anybody looks at, until it moves.
+        if method == Method::WindowsMsi {
+            let installed = found
+                .places
+                .installed
+                .as_ref()
+                .map(|folder| folder.display().to_string());
+            let installed = installed
+                .as_deref()
+                .map(|f| f.trim_end_matches(['\\', '/']));
+            notes.push(match (installed, options.wizard) {
+                (Some(folder), false) => format!(
+                    "Noctorium is installed in {folder} already, and the new version goes into the \
+                     same folder. Windows asks for permission first; after that there is nothing to \
+                     click."
+                ),
+                (Some(folder), true) => format!(
+                    "Noctorium is installed in {folder} already. The Noctorium setup opens on that \
+                     folder, and another can be chosen there."
+                ),
+                (None, true) => {
+                    "The Noctorium setup opens, where the folder it goes in can be chosen.".into()
+                }
+                (None, false) => "Windows asks for permission first; after that there is nothing \
+                                  to click, and it goes into Program Files."
+                    .into(),
+            });
+        }
+
+        let file = downloads.join(&asset.name);
+        let mut actions =
+            install::actions_for(method, &file, escalation, &found.places, options.wizard)?;
         let user_bin_on_path = found
             .places
             .user_bin()
@@ -384,13 +510,15 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         }
         // Most Linux distributions put ~/.local/bin on PATH once it exists, and the end of the install says
         // what to do on one that does not. macOS never does, so on a Mac it is done here, and shown in
-        // the plan like everything else that changes a file.
-        if method == Method::CliMac && !user_bin_on_path {
+        // the plan like everything else that changes a file -- unless NOCTORIUM_NO_PATH asks for the
+        // profile to be left alone.
+        if method == Method::CliMac && !user_bin_on_path && !found.places.leave_path {
             actions.push(install::add_user_bin_to_path(&found.places)?);
         }
         let start = install::how_to_start(method, &found.places, user_bin_on_path);
         items.push(Item {
             product,
+            on_disk: OnDisk::at(&file, asset.size),
             asset,
             published,
             method,
@@ -406,6 +534,7 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         latest: found.latest,
         items,
         places: found.places.clone(),
+        downloads,
         notes,
     })
 }
@@ -458,6 +587,13 @@ fn desktop_method(
                     best.method.describe()
                 ));
             }
+        }
+        if best.method == Method::WindowsSetup {
+            notes.push(format!(
+                "{} has no .msi, so this is its setup .exe, which unpacks one again before it starts \
+                 and asks its own questions.",
+                found.release.tag
+            ));
         }
         if system.os == Os::Linux
             && system.package_manager.is_none()
@@ -587,7 +723,11 @@ fn join_or(words: &[String]) -> String {
     }
 }
 
-/// How far [`carry_out`] has got. `item` is the index into [`Plan::items`].
+/// How far [`carry_out`] has got. `item` is the index into [`Plan::items`], and every step says which it
+/// is about, because with two products their downloads run at once and their steps arrive interleaved.
+///
+/// Each item ends in exactly one of [Step::Installed] -- or [Step::Verified], when only downloading --
+/// and [Step::Failed].
 #[derive(Debug, Clone)]
 pub enum Step {
     Downloading {
@@ -595,77 +735,176 @@ pub enum Step {
         done: u64,
         total: u64,
     },
-    /// The download is complete and hashes to what the release said it would.
+    /// The file is whole and hashes to what the release said it would: downloaded, carried on from an
+    /// earlier run, or found from one.
     Verified {
         item: usize,
-        hash: String,
+        how: Fetched,
     },
     /// About to do one part of the install. The command is given so it can be shown before it runs.
     Installing {
         item: usize,
         command: String,
     },
-    /// That product is in.
+    /// That product is in, with anything the install had to say about it.
     Installed {
         item: usize,
+        note: Option<String>,
+    },
+    /// That product is not, and why. The others carry on.
+    Failed {
+        item: usize,
+        why: String,
     },
 }
 
 /// Downloads what [`plan`] found, checks it, installs it, and clears up after itself.
+///
+/// Everything is downloaded at once, each on a connection of its own, and each product is installed the
+/// moment its own download has been checked, rather than after the slowest of them. The installs
+/// themselves go one at a time, in the order the downloads finish: two installers at once is two
+/// password prompts at once, and two package managers at once is one of them refusing to start. In
+/// practice that is the Noctorium CLI, which is a fifth of the size, unpacked while the rest of Noctorium
+/// is still coming down, and then Noctorium.
+///
+/// One product failing does not stop the other: somebody who asked for both and has a network that
+/// dropped half of one still gets the other. The first failure is what this returns, once everything has
+/// finished; each is reported as it happens. A download that was checked is removed once it is
+/// installed, and kept when the install failed or was cancelled, so trying again does not download it
+/// again.
 pub fn carry_out(plan: &Plan, report: &mut dyn FnMut(Step)) -> Result<(), Problem> {
     // Everything that would stop an install, asked before anything is downloaded for it.
     for item in &plan.items {
         install::check_before_download(item.method)?;
     }
+    run(plan, report, true)
+}
 
-    let directory = download_folder();
-    std::fs::create_dir_all(&directory)
+/// Downloads what [`plan`] found and checks it, and installs nothing: the files are left in the
+/// download folder, where a later run finds them and installs them without downloading them again.
+pub fn download_only(plan: &Plan, report: &mut dyn FnMut(Step)) -> Result<(), Problem> {
+    run(plan, report, false)
+}
+
+/// What the threads doing the work tell the one reporting it.
+enum Event {
+    Progress(usize, u64, u64),
+    Fetched(usize, Result<(PathBuf, Fetched), Problem>),
+    Installing(usize, String),
+    Installed(usize, Result<Option<String>, Problem>),
+}
+
+fn run(plan: &Plan, report: &mut dyn FnMut(Step), install: bool) -> Result<(), Problem> {
+    if plan.items.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&plan.downloads)
         .map_err(|e| Problem::Local(format!("Could not make a folder to download into: {e}")))?;
 
-    for (index, item) in plan.items.iter().enumerate() {
-        let (file, actual) = fetch::download(
-            &item.asset.url,
-            &directory,
-            &item.asset.name,
-            item.asset.size,
-            |done, total| {
-                report(Step::Downloading {
-                    item: index,
-                    done,
-                    total,
-                })
-            },
-        )?;
+    let mut first_failure: Option<Problem> = None;
+    let mut fail = |item: usize, problem: Problem, report: &mut dyn FnMut(Step)| {
+        report(Step::Failed {
+            item,
+            why: problem.to_string(),
+        });
+        first_failure.get_or_insert(problem);
+    };
 
-        if actual != item.published {
-            // Removed rather than left about: a file that failed its checksum is the one file nobody
-            // should be able to run by accident afterwards.
-            let _ = std::fs::remove_file(&file);
-            return Err(Problem::WrongChecksum {
-                name: item.asset.name.clone(),
+    std::thread::scope(|scope| {
+        let (events, heard) = mpsc::channel::<Event>();
+        for (index, item) in plan.items.iter().enumerate() {
+            let events = events.clone();
+            scope.spawn(move || {
+                let progress = events.clone();
+                let fetched = fetch::download(
+                    &item.asset.url,
+                    &plan.downloads,
+                    &item.asset.name,
+                    item.asset.size,
+                    &item.published,
+                    |done, total| {
+                        let _ = progress.send(Event::Progress(index, done, total));
+                    },
+                );
+                let _ = events.send(Event::Fetched(index, fetched));
             });
         }
-        report(Step::Verified {
-            item: index,
-            hash: actual,
-        });
 
-        for action in &item.actions {
-            report(Step::Installing {
-                item: index,
-                command: action.describe(&plan.places),
+        // The one thread that installs, which is given each item as its download is checked and works
+        // through them in that order. It is not this thread, so that the progress of a download still
+        // coming down goes on being reported while another product is being installed.
+        let (work, queue) = mpsc::channel::<usize>();
+        let mut work = Some(work);
+        if install {
+            let events = events.clone();
+            scope.spawn(move || {
+                for index in queue {
+                    let mut outcome = Ok(None);
+                    for action in &plan.items[index].actions {
+                        let _ =
+                            events.send(Event::Installing(index, action.describe(&plan.places)));
+                        match action.perform() {
+                            Ok(note) => {
+                                if note.is_some() {
+                                    outcome = Ok(note);
+                                }
+                            }
+                            Err(problem) => {
+                                outcome = Err(problem);
+                                break;
+                            }
+                        }
+                    }
+                    let _ = events.send(Event::Installed(index, outcome));
+                }
             });
-            if let Err(problem) = action.perform() {
-                let _ = std::fs::remove_file(&file);
-                return Err(problem);
+        }
+        // Only the threads hold a way to say anything now, so the loop below ends when the last of them
+        // has finished.
+        drop(events);
+
+        let mut finished = 0;
+        for event in heard {
+            match event {
+                Event::Progress(item, done, total) => {
+                    report(Step::Downloading { item, done, total })
+                }
+                Event::Fetched(item, Ok((_, how))) => {
+                    report(Step::Verified { item, how });
+                    match &work {
+                        Some(work) if install => {
+                            let _ = work.send(item);
+                        }
+                        _ => finished += 1,
+                    }
+                }
+                Event::Fetched(item, Err(problem)) => {
+                    fail(item, problem, report);
+                    finished += 1;
+                }
+                Event::Installing(item, command) => report(Step::Installing { item, command }),
+                Event::Installed(item, Ok(note)) => {
+                    // The download is several hundred megabytes and has done its job.
+                    let _ = std::fs::remove_file(&plan.items[item].file);
+                    report(Step::Installed { item, note });
+                    finished += 1;
+                }
+                Event::Installed(item, Err(problem)) => {
+                    fail(item, problem, report);
+                    finished += 1;
+                }
+            }
+            // Nothing more to install, so the installing thread is let go.
+            if finished == plan.items.len() {
+                work = None;
             }
         }
-        report(Step::Installed { item: index });
+    });
 
-        // The download is several hundred megabytes and has done its job.
-        let _ = std::fs::remove_file(&file);
+    match first_failure {
+        Some(problem) => Err(problem),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// The whole of the old single-step discovery: the latest release, the desktop application, the format
@@ -681,6 +920,8 @@ mod tests {
     use crate::system::{Family, OsRelease, PackageManager};
 
     const SUMS: &str = "\
+0000000000000000000000000000000000000000000000000000000000000000  Noctorium-0.7.0-windows-x64.msi
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-0.7.0-windows-x64.zip
 1111111111111111111111111111111111111111111111111111111111111111  Noctorium-0.7.0-windows-x64-setup.exe
 2222222222222222222222222222222222222222222222222222222222222222  noctorium_0.7.0_amd64.deb
 3333333333333333333333333333333333333333333333333333333333333333  Noctorium-0.7.0-x86_64.AppImage
@@ -735,10 +976,35 @@ mod tests {
                 home: Some("/home/sam".into()),
                 data: Some("/home/sam/.local/share".into()),
                 programs: Some(r"C:\Users\Sam\AppData\Local\Programs".into()),
-                applications: None,
+                ..Places::default()
             },
         }
     }
+
+    fn windows() -> System {
+        System {
+            os: Os::Windows,
+            arch: Some(Arch::X86_64),
+            arch_name: "x86_64",
+            release: None,
+            mac_version: None,
+            family: None,
+            package_manager: None,
+            flatpak: false,
+            mpv: false,
+            root: false,
+            sudo_user: None,
+        }
+    }
+
+    /// What a Windows release carries: the .msi, the setup that wraps it, and the CLI's archive.
+    const ON_WINDOWS: &[&str] = &[
+        "Noctorium-0.7.0-windows-x64-setup.exe",
+        "Noctorium-0.7.0-windows-x64.msi",
+        "noctorium-cli-0.7.0-windows-x64.zip",
+        "Noctorium-Installer-windows-x64.exe",
+        "SHA256SUMS.txt",
+    ];
 
     /// A Mac, of the kind given, run by an administrator who has not put ~/.local/bin on PATH.
     fn mac(arch: Arch) -> System {
@@ -766,8 +1032,8 @@ mod tests {
             places: Places {
                 home: Some("/Users/sam".into()),
                 data: Some("/Users/sam/.local/share".into()),
-                programs: None,
                 applications: Some("/Applications".into()),
+                ..Places::default()
             },
             ..found(mac(arch), names)
         }
@@ -848,6 +1114,7 @@ mod tests {
                     archive: download_folder().join("noctorium-cli-0.7.0-macos-arm64.tar.gz"),
                     into: PathBuf::from("/Users/sam/.local/share/noctorium-cli"),
                     link: Some(PathBuf::from("/Users/sam/.local/bin/noctorium")),
+                    path: false,
                 },
                 Action::AddToProfile {
                     profile: PathBuf::from("/Users/sam/.zprofile"),
@@ -1128,5 +1395,472 @@ mod tests {
         assert_eq!(Format::parse("AppImage"), Some(Format::AppImage));
         assert_eq!(Format::parse("arch"), Some(Format::Arch));
         assert_eq!(Format::parse("snap"), None);
+    }
+
+    // ------------------------------------------------------------ Windows
+
+    #[test]
+    fn windows_takes_the_msi_and_hands_it_to_msiexec() {
+        let plan = plan(&found(windows(), ON_WINDOWS), Options::default()).expect("should plan");
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.method, Method::WindowsMsi);
+        assert_eq!(item.asset.name, "Noctorium-0.7.0-windows-x64.msi");
+        assert_eq!(item.published, "0".repeat(64));
+        assert_eq!(
+            item.actions,
+            vec![Action::InstallMsi {
+                msi: download_folder().join("Noctorium-0.7.0-windows-x64.msi"),
+                folder: None,
+                wizard: false,
+            }]
+        );
+        let shown = item.actions[0].describe(&plan.places);
+        assert!(
+            shown.starts_with("msiexec /i ")
+                && shown.ends_with(" /passive /norestart MSIFASTINSTALL=7"),
+            "{shown}"
+        );
+        assert!(
+            plan.notes.iter().any(|n| n.contains("nothing to click")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(item.start.contains("Start menu"));
+        assert!(
+            !plan.needs_password(),
+            "Windows asks for its own permission"
+        );
+    }
+
+    #[test]
+    fn a_release_without_an_msi_falls_back_to_its_setup_and_says_so() {
+        let names = &[
+            "Noctorium-0.7.0-windows-x64-setup.exe",
+            "noctorium-cli-0.7.0-windows-x64.zip",
+            "SHA256SUMS.txt",
+        ];
+        let found = found(windows(), names);
+        let offers = offers(&found);
+        assert_eq!(
+            offers.len(),
+            1,
+            "the setup is never offered beside the .msi"
+        );
+        assert_eq!(offers[0].method, Method::WindowsSetup);
+
+        let plan = plan(&found, Options::default()).expect("should plan");
+        let item = &plan.items[0];
+        assert_eq!(item.method, Method::WindowsSetup);
+        assert_eq!(item.asset.name, "Noctorium-0.7.0-windows-x64-setup.exe");
+        assert_eq!(
+            item.actions,
+            vec![Action::Run {
+                program: download_folder()
+                    .join("Noctorium-0.7.0-windows-x64-setup.exe")
+                    .to_string_lossy()
+                    .into(),
+                args: vec![],
+            }]
+        );
+        assert!(
+            plan.notes.iter().any(|n| n.contains("has no .msi")),
+            "{:?}",
+            plan.notes
+        );
+    }
+
+    #[test]
+    fn a_release_with_neither_says_what_it_looked_for() {
+        let found = found(windows(), &["noctorium_0.7.0_amd64.deb", "SHA256SUMS.txt"]);
+        let said = plan(&found, Options::default()).unwrap_err().to_string();
+        assert!(said.contains("Windows Installer package (.msi)"), "{said}");
+    }
+
+    #[test]
+    fn an_upgrade_on_windows_goes_into_the_folder_noctorium_is_in() {
+        let mut found = found(windows(), ON_WINDOWS);
+        found.places.installed = Some(PathBuf::from(r"D:\Programs\Noctorium\"));
+        let plan = plan(&found, Options::default()).expect("should plan");
+        assert_eq!(
+            plan.items[0].actions,
+            vec![Action::InstallMsi {
+                msi: download_folder().join("Noctorium-0.7.0-windows-x64.msi"),
+                folder: Some(PathBuf::from(r"D:\Programs\Noctorium\")),
+                wizard: false,
+            }]
+        );
+        assert!(plan.items[0].actions[0]
+            .describe(&plan.places)
+            .ends_with(r#" INSTALLDIR="D:\Programs\Noctorium""#));
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains(r"D:\Programs\Noctorium")),
+            "{:?}",
+            plan.notes
+        );
+    }
+
+    #[test]
+    fn the_wizard_is_there_for_choosing_the_folder() {
+        let options = Options {
+            wizard: true,
+            ..Options::default()
+        };
+        let plan = plan(&found(windows(), ON_WINDOWS), options).expect("should plan");
+        assert_eq!(
+            plan.items[0].actions,
+            vec![Action::InstallMsi {
+                msi: download_folder().join("Noctorium-0.7.0-windows-x64.msi"),
+                folder: None,
+                wizard: true,
+            }]
+        );
+        let shown = plan.items[0].actions[0].describe(&plan.places);
+        assert!(!shown.contains("/passive"), "{shown}");
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("folder it goes in can be chosen")),
+            "{:?}",
+            plan.notes
+        );
+
+        // Over an install that is there already, the wizard starts on its folder, and says so rather
+        // than promising nothing to click.
+        let mut installed = found(windows(), ON_WINDOWS);
+        installed.places.installed = Some(PathBuf::from(r"D:\Noctorium"));
+        let plan = super::plan(&installed, options).expect("should plan");
+        assert!(
+            plan.items[0].actions[0]
+                .describe(&plan.places)
+                .ends_with(r#"MSIFASTINSTALL=7 INSTALLDIR="D:\Noctorium""#),
+            "{:?}",
+            plan.items[0].actions
+        );
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("opens on that folder") && !n.contains("nothing to click")),
+            "{:?}",
+            plan.notes
+        );
+    }
+
+    #[test]
+    fn both_products_on_windows_are_the_msi_and_the_cli_on_the_path() {
+        let options = Options {
+            products: Products::Both,
+            ..Options::default()
+        };
+        let plan = plan(&found(windows(), ON_WINDOWS), options).expect("should plan");
+        let methods: Vec<Method> = plan.items.iter().map(|i| i.method).collect();
+        assert_eq!(methods, vec![Method::WindowsMsi, Method::CliWindows]);
+        assert_eq!(
+            plan.items[1].actions,
+            vec![Action::UnpackCli {
+                archive: download_folder().join("noctorium-cli-0.7.0-windows-x64.zip"),
+                into: PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs").join("Noctorium CLI"),
+                link: None,
+                path: true,
+            }]
+        );
+        assert!((plan.megabytes() - 200.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_mac_leaves_its_profile_alone_when_asked_to() {
+        let mut found = found_on_a_mac(Arch::Aarch64, WITH_MACS);
+        found.places.leave_path = true;
+        let options = Options {
+            products: Products::Cli,
+            ..Options::default()
+        };
+        let plan = plan(&found, options).expect("should plan");
+        assert!(
+            !plan.items[0]
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::AddToProfile { .. })),
+            "{:?}",
+            plan.items[0].actions
+        );
+    }
+
+    #[test]
+    fn the_windows_choice_is_one_of_three_or_nothing() {
+        assert_eq!(Products::from_choice(true, false), Some(Products::Desktop));
+        assert_eq!(Products::from_choice(false, true), Some(Products::Cli));
+        assert_eq!(Products::from_choice(true, true), Some(Products::Both));
+        assert_eq!(Products::from_choice(false, false), None);
+        assert!(Products::Both.includes(Product::Cli));
+        assert!(!Products::Desktop.includes(Product::Cli));
+    }
+
+    #[test]
+    fn the_plan_knows_what_an_earlier_run_left_behind() {
+        let here = crate::archive::tests::scratch("on-disk");
+        let whole = here.join("whole.msi");
+        std::fs::write(&whole, vec![0u8; 1000]).unwrap();
+        assert_eq!(OnDisk::at(&whole, 1000), OnDisk::Whole);
+        assert_eq!(
+            OnDisk::at(&whole, 2000),
+            OnDisk::Nothing,
+            "a file of the wrong size is not the file"
+        );
+        let part = here.join("part.msi");
+        std::fs::write(fetch::partial_path(&part), vec![0u8; 300]).unwrap();
+        assert_eq!(OnDisk::at(&part, 1000), OnDisk::Part(300));
+        assert_eq!(OnDisk::at(&part, 200), OnDisk::Nothing);
+        assert_eq!(OnDisk::at(&here.join("none.msi"), 1000), OnDisk::Nothing);
+
+        let mut plan = plan(&found(windows(), ON_WINDOWS), Options::default()).unwrap();
+        plan.items[0].on_disk = OnDisk::Part(60 * 1_048_576);
+        assert!((plan.megabytes_to_download() - 40.0).abs() < 0.01);
+        plan.items[0].on_disk = OnDisk::Whole;
+        assert_eq!(plan.megabytes_to_download(), 0.0);
+    }
+
+    // ------------------------------------------------------------ carrying it out
+
+    use crate::fetch::tests::{Server, Serves};
+    use sha2::{Digest, Sha256};
+
+    fn sha(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn bytes(length: usize, seed: u8) -> Vec<u8> {
+        (0..length)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
+    }
+
+    /// One product, fetched from [server] and installed by writing a profile line to [profile] -- an
+    /// action that touches nothing but a file of the test's own, and fails when its folder is missing.
+    fn item(
+        product: Product,
+        server: &Server,
+        body: &[u8],
+        downloads: &Path,
+        profile: PathBuf,
+    ) -> Item {
+        let name = format!("{}.bin", product.name().replace(' ', "-"));
+        Item {
+            product,
+            asset: Asset {
+                name: name.clone(),
+                url: server.url.clone(),
+                size: body.len() as u64,
+            },
+            published: sha(body),
+            // Neither has anything to check before downloading, which is all the method decides here.
+            method: if product == Product::Cli {
+                Method::CliLinux
+            } else {
+                Method::AppImage
+            },
+            escalation: None,
+            file: downloads.join(&name),
+            on_disk: OnDisk::Nothing,
+            actions: vec![Action::AddToProfile { profile }],
+            start: String::new(),
+        }
+    }
+
+    fn plan_of(items: Vec<Item>, downloads: PathBuf) -> Plan {
+        Plan {
+            tag: "v0.7.0".into(),
+            latest: true,
+            items,
+            places: Places::default(),
+            downloads,
+            notes: vec![],
+        }
+    }
+
+    /// The steps, as a short line each, in the order they came.
+    fn record(plan: &Plan, install: bool) -> (Vec<String>, Result<(), Problem>) {
+        let mut steps = Vec::new();
+        let mut report = |step: Step| {
+            steps.push(match step {
+                Step::Downloading { item, done, .. } => format!("down {item} {done}"),
+                Step::Verified { item, how } => format!("checked {item} {how:?}"),
+                Step::Installing { item, .. } => format!("installing {item}"),
+                Step::Installed { item, .. } => format!("installed {item}"),
+                Step::Failed { item, .. } => format!("failed {item}"),
+            })
+        };
+        let outcome = if install {
+            carry_out(plan, &mut report)
+        } else {
+            download_only(plan, &mut report)
+        };
+        (steps, outcome)
+    }
+
+    fn position(steps: &[String], wanted: &str) -> usize {
+        steps
+            .iter()
+            .position(|s| s == wanted)
+            .unwrap_or_else(|| panic!("no {wanted} in {steps:?}"))
+    }
+
+    /// The case the whole thing exists for: the small download does not wait for the big one, and is
+    /// installed while the big one is still coming down.
+    #[test]
+    fn both_downloads_run_at_once_and_each_is_installed_as_soon_as_it_is_checked() {
+        let here = crate::archive::tests::scratch("both-at-once");
+        let downloads = here.join("downloads");
+        let desktop_body = bytes(3_200_000, 1);
+        let cli_body = bytes(320_000, 2);
+        let desktop = Server::start(desktop_body.clone(), Serves::Slowly);
+        let cli = Server::start(cli_body.clone(), Serves::Slowly);
+        let plan = plan_of(
+            vec![
+                item(
+                    Product::Desktop,
+                    &desktop,
+                    &desktop_body,
+                    &downloads,
+                    here.join("desktop"),
+                ),
+                item(Product::Cli, &cli, &cli_body, &downloads, here.join("cli")),
+            ],
+            downloads.clone(),
+        );
+        let (steps, outcome) = record(&plan, true);
+        assert!(outcome.is_ok(), "{outcome:?}: {steps:?}");
+
+        let desktop_started = position(&steps, "down 0 0");
+        let cli_checked = position(&steps, "checked 1 Downloaded");
+        let cli_installed = position(&steps, "installed 1");
+        let desktop_checked = position(&steps, "checked 0 Downloaded");
+        let desktop_still_coming = steps
+            .iter()
+            .rposition(|s| s.starts_with("down 0 "))
+            .unwrap();
+        assert!(
+            desktop_started < cli_checked && cli_checked < desktop_still_coming,
+            "the desktop was downloading while the CLI finished: {steps:?}"
+        );
+        assert!(
+            cli_installed < desktop_checked,
+            "the CLI was installed before Noctorium had come down: {steps:?}"
+        );
+        assert_eq!(steps.last().map(String::as_str), Some("installed 0"));
+        // Installed, and their downloads cleared away.
+        assert!(here.join("cli").is_file() && here.join("desktop").is_file());
+        assert!(!plan.items[0].file.exists() && !plan.items[1].file.exists());
+    }
+
+    #[test]
+    fn one_product_failing_does_not_stop_the_other() {
+        let here = crate::archive::tests::scratch("one-fails");
+        let downloads = here.join("downloads");
+        let desktop_body = bytes(500_000, 3);
+        let cli_body = bytes(200_000, 4);
+        let desktop = Server::start(desktop_body.clone(), Serves::Ranges);
+        let cli = Server::start(cli_body.clone(), Serves::Ranges);
+        let mut wrong = item(
+            Product::Desktop,
+            &desktop,
+            &desktop_body,
+            &downloads,
+            here.join("d"),
+        );
+        wrong.published = sha(b"not this");
+        let plan = plan_of(
+            vec![
+                wrong,
+                item(Product::Cli, &cli, &cli_body, &downloads, here.join("cli")),
+            ],
+            downloads,
+        );
+        let (steps, outcome) = record(&plan, true);
+        assert!(
+            matches!(&outcome, Err(Problem::WrongChecksum { name }) if name == "Noctorium.bin"),
+            "{outcome:?}"
+        );
+        assert!(steps.contains(&"failed 0".to_string()), "{steps:?}");
+        assert!(steps.contains(&"installed 1".to_string()), "{steps:?}");
+        assert!(!steps.contains(&"installing 0".to_string()), "{steps:?}");
+        assert!(here.join("cli").is_file());
+    }
+
+    #[test]
+    fn a_failed_install_keeps_its_download_so_trying_again_does_not_fetch_it_again() {
+        let here = crate::archive::tests::scratch("install-fails");
+        let downloads = here.join("downloads");
+        let body = bytes(400_000, 5);
+        let server = Server::start(body.clone(), Serves::Ranges);
+        // A profile in a folder that is not there, which cannot be written.
+        let failing = item(
+            Product::Cli,
+            &server,
+            &body,
+            &downloads,
+            here.join("missing").join("profile"),
+        );
+        let plan = plan_of(vec![failing], downloads);
+        let (steps, outcome) = record(&plan, true);
+        assert!(matches!(outcome, Err(Problem::Local(_))), "{outcome:?}");
+        assert_eq!(steps.last().map(String::as_str), Some("failed 0"));
+        assert!(plan.items[0].file.is_file(), "the checked download is kept");
+
+        // Trying again, with the folder there now: nothing more is asked of the server.
+        std::fs::create_dir_all(here.join("missing")).unwrap();
+        let (steps, outcome) = record(&plan, true);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert!(
+            steps.contains(&"checked 0 AlreadyHere".to_string()),
+            "{steps:?}"
+        );
+        assert_eq!(server.asked(), vec![None], "downloaded once, not twice");
+        assert!(
+            !plan.items[0].file.exists(),
+            "and removed once it was installed"
+        );
+    }
+
+    #[test]
+    fn downloading_only_checks_everything_and_installs_nothing() {
+        let here = crate::archive::tests::scratch("download-only");
+        let downloads = here.join("downloads");
+        let desktop_body = bytes(600_000, 6);
+        let cli_body = bytes(100_000, 7);
+        let desktop = Server::start(desktop_body.clone(), Serves::Ranges);
+        let cli = Server::start(cli_body.clone(), Serves::Ranges);
+        let plan = plan_of(
+            vec![
+                item(
+                    Product::Desktop,
+                    &desktop,
+                    &desktop_body,
+                    &downloads,
+                    here.join("d"),
+                ),
+                item(Product::Cli, &cli, &cli_body, &downloads, here.join("c")),
+            ],
+            downloads,
+        );
+        let (steps, outcome) = record(&plan, false);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert!(
+            steps.contains(&"checked 0 Downloaded".to_string()),
+            "{steps:?}"
+        );
+        assert!(
+            steps.contains(&"checked 1 Downloaded".to_string()),
+            "{steps:?}"
+        );
+        assert!(!steps.iter().any(|s| s.starts_with("install")), "{steps:?}");
+        assert_eq!(std::fs::read(&plan.items[0].file).unwrap(), desktop_body);
+        assert_eq!(std::fs::read(&plan.items[1].file).unwrap(), cli_body);
+        assert!(!here.join("d").exists() && !here.join("c").exists());
     }
 }

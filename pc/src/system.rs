@@ -10,7 +10,7 @@
 //! as: see [mac_hardware].
 
 use crate::github::Arch;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The operating system, as far as an installer cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,6 +451,218 @@ pub fn on_search_path(path: &str, directory: &Path) -> bool {
         .any(|entry| !entry.is_empty() && entry.trim_end_matches('/') == wanted)
 }
 
+/// The folder Windows says the program it lists as [display_name] is installed in, or nothing when it
+/// lists no such program -- or this is not Windows.
+///
+/// Read from the program's entry under the Uninstall key, which is what Apps & features shows, from its
+/// `InstallLocation`: in the 64-bit view of the machine's own list, then the 32-bit one, then this user's,
+/// which is where a per-user install would be.
+pub fn installed_folder(display_name: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        choose_installed_folder(display_name, &win32::uninstall_entries(display_name), |f| {
+            f.is_dir()
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = display_name;
+        None
+    }
+}
+
+/// The decision, from the Uninstall entries found -- each a display name and an install location -- and
+/// a way of asking whether a folder is there, so it can be tested anywhere.
+///
+/// Only an entry named exactly [display_name] counts, so Noctorium's is never mistaken for the Noctorium
+/// CLI's or anything else that starts the same way. A location is taken as written, less any quotes an
+/// installer put round it; one whose folder is still there is preferred over one that is not, which is a
+/// leftover, but a leftover is still better than nothing -- it is where somebody chose to put it.
+pub fn choose_installed_folder(
+    display_name: &str,
+    entries: &[(String, String)],
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let folders: Vec<PathBuf> = entries
+        .iter()
+        .filter(|(name, _)| name.trim().eq_ignore_ascii_case(display_name))
+        .map(|(_, location)| location.trim().trim_matches('"').trim())
+        .filter(|location| !location.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    folders
+        .iter()
+        .find(|folder| exists(folder))
+        .or(folders.first())
+        .cloned()
+}
+
+/// Whether a program called [image] -- `Noctorium.exe` -- is running, on Windows. Never anywhere else.
+///
+/// By the name Windows lists it under, which is all its process list says without asking each process
+/// for more than this program may be allowed to know about it -- and in its own case, although Windows
+/// does not care about case in a file name. The Noctorium CLI's launcher is `noctorium.exe`, and one
+/// left running in a terminal, or serving `noctorium web` to the house, is no reason to refuse to
+/// install Noctorium.
+pub fn running(image: &str) -> bool {
+    #[cfg(windows)]
+    {
+        win32::running(image)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = image;
+        false
+    }
+}
+
+#[cfg(windows)]
+mod win32 {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
+        HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, RRF_RT_REG_SZ,
+    };
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(Some(0)).collect()
+    }
+
+    /// Every Uninstall entry called [display_name], as its name and its install location.
+    pub fn uninstall_entries(display_name: &str) -> Vec<(String, String)> {
+        let path = wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
+        let mut entries = Vec::new();
+        for (root, view) in [
+            (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+            (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+            (HKEY_CURRENT_USER, 0),
+        ] {
+            let mut key: HKEY = std::ptr::null_mut();
+            // SAFETY: the path is NUL-terminated and outlives the call, and the key is written only
+            // when the call succeeds, and closed below.
+            if unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_READ | view, &mut key) }
+                != ERROR_SUCCESS
+            {
+                continue;
+            }
+            for index in 0.. {
+                // A key's name is at most 255 characters.
+                let mut name = [0u16; 256];
+                let mut length = name.len() as u32;
+                // SAFETY: the buffer is as long as the length passed, and every other pointer is null,
+                // which the call allows.
+                let found = unsafe {
+                    RegEnumKeyExW(
+                        key,
+                        index,
+                        name.as_mut_ptr(),
+                        &mut length,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                };
+                if found == ERROR_NO_MORE_ITEMS {
+                    break;
+                }
+                if found != ERROR_SUCCESS {
+                    continue;
+                }
+                let Some(shown) = value(key, &name, "DisplayName") else {
+                    continue;
+                };
+                if !shown.trim().eq_ignore_ascii_case(display_name) {
+                    continue;
+                }
+                let location = value(key, &name, "InstallLocation").unwrap_or_default();
+                entries.push((shown, location));
+            }
+            // SAFETY: opened above and not used again.
+            unsafe { RegCloseKey(key) };
+        }
+        entries
+    }
+
+    /// A string value of the subkey [subkey] of [key], NUL-terminated, or nothing if it has none.
+    fn value(key: HKEY, subkey: &[u16], name: &str) -> Option<String> {
+        let name = wide(name);
+        let mut bytes = 0u32;
+        // SAFETY: asked for the size first, with no buffer, which the call allows; both names are
+        // NUL-terminated and outlive it.
+        let sized = unsafe {
+            RegGetValueW(
+                key,
+                subkey.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut bytes,
+            )
+        };
+        if sized != ERROR_SUCCESS {
+            return None;
+        }
+        let mut buffer = vec![0u16; (bytes as usize).div_ceil(2) + 1];
+        let mut bytes = (buffer.len() * 2) as u32;
+        // SAFETY: the buffer is the number of bytes the call is told it may write.
+        let read = unsafe {
+            RegGetValueW(
+                key,
+                subkey.as_ptr(),
+                name.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut bytes,
+            )
+        };
+        if read != ERROR_SUCCESS {
+            return None;
+        }
+        let length = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        Some(String::from_utf16_lossy(&buffer[..length]))
+    }
+
+    pub fn running(image: &str) -> bool {
+        // SAFETY: the snapshot is checked before it is used and closed after; the entry is plain data
+        // whose size is set, as the calls require, before it is filled in.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut found = false;
+            let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+            while more {
+                let length = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                if String::from_utf16_lossy(&entry.szExeFile[..length]) == image {
+                    found = true;
+                    break;
+                }
+                more = Process32NextW(snapshot, &mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            found
+        }
+    }
+}
+
 /// Whether this process can already do anything, asked of the kernel rather than of the environment.
 pub fn is_root() -> bool {
     #[cfg(unix)]
@@ -716,6 +928,77 @@ HOME_URL="https://www.ubuntu.com/"
         assert_eq!(mac_hardware(Some(Arch::X86_64), newer), Some(Arch::X86_64));
         let older = kernel(&[]);
         assert_eq!(mac_hardware(Some(Arch::X86_64), older), Some(Arch::X86_64));
+    }
+
+    fn entry(name: &str, location: &str) -> (String, String) {
+        (name.to_string(), location.to_string())
+    }
+
+    #[test]
+    fn the_folder_noctorium_is_installed_in_is_read_from_its_own_entry_only() {
+        let everywhere = |_: &Path| true;
+        let entries = [
+            entry(
+                "Noctorium CLI",
+                r"C:\Users\Sam\AppData\Local\Programs\Noctorium CLI",
+            ),
+            entry("Mozilla Firefox", r"C:\Program Files\Mozilla Firefox"),
+            entry("Noctorium", r"D:\Apps\Noctorium\"),
+        ];
+        assert_eq!(
+            choose_installed_folder("Noctorium", &entries, everywhere),
+            Some(PathBuf::from(r"D:\Apps\Noctorium\"))
+        );
+        assert_eq!(
+            choose_installed_folder("Noctorium", &entries[..2], everywhere),
+            None,
+            "the CLI is not Noctorium"
+        );
+        // As some installers write it: quoted, or not at all.
+        assert_eq!(
+            choose_installed_folder(
+                "Noctorium",
+                &[entry(" noctorium ", "\"C:\\Program Files\\Noctorium\\\"")],
+                everywhere
+            ),
+            Some(PathBuf::from(r"C:\Program Files\Noctorium\"))
+        );
+        assert_eq!(
+            choose_installed_folder("Noctorium", &[entry("Noctorium", "  ")], everywhere),
+            None
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_still_there_is_preferred_over_a_leftover() {
+        let entries = [
+            entry("Noctorium", r"C:\Old\Noctorium"),
+            entry("Noctorium", r"C:\Program Files\Noctorium"),
+        ];
+        // As text, since these are Windows paths and the tests run everywhere.
+        let only_program_files =
+            |folder: &Path| folder.to_string_lossy().starts_with(r"C:\Program Files");
+        assert_eq!(
+            choose_installed_folder("Noctorium", &entries, only_program_files),
+            Some(PathBuf::from(r"C:\Program Files\Noctorium"))
+        );
+        assert_eq!(
+            choose_installed_folder("Noctorium", &entries, |_| false),
+            Some(PathBuf::from(r"C:\Old\Noctorium")),
+            "where somebody chose to put it is still better than nothing"
+        );
+    }
+
+    #[test]
+    fn nothing_is_installed_anywhere_but_windows_as_far_as_this_can_tell() {
+        if !cfg!(windows) {
+            assert_eq!(installed_folder("Noctorium"), None);
+            assert!(!running("Noctorium.exe"));
+        }
+        // On Windows it is whatever this machine has, which is not for a test to decide; it is asked for
+        // an entry no machine has, which must be nothing.
+        assert_eq!(installed_folder("No Such Program, Surely 7f3a"), None);
+        assert!(!running("no-such-program-7f3a.exe"));
     }
 
     #[test]

@@ -80,6 +80,9 @@ jobs:
           "$cli" --help > /dev/null
           "$cli" --list --no-color
           "$cli" --dry-run --yes
+          # Both products, which is the .msi and the msiexec line it is installed with on Windows, and the
+          # distribution's package and ~/.local/bin on Linux.
+          "$cli" --dry-run --yes --product both
           # Usage errors are 2, not 1, so a script can tell a typo from a failed install.
           status=0; "$cli" --not-an-option 2> /dev/null || status=$?
           test "$status" = 2

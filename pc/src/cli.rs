@@ -6,24 +6,29 @@
 //! somebody at a prompt and a script that wants Noctorium on a fleet of machines. Colour is a courtesy:
 //! off when output is not a terminal, when NO_COLOR is set, or when asked.
 
-use crate::flow::{self, Format, Found, Offer, Options, Plan, Products, Step};
-use crate::github::{Arch, Asset, Problem};
-use crate::install::Method;
+use crate::fetch::Fetched;
+use crate::flow::{self, Format, Found, Offer, OnDisk, Options, Plan, Products, Step};
+use crate::github::{Arch, Problem};
 use crate::system::{Asking, Os};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 pub const USAGE: &str = "\
-Installs Noctorium, the music player, or the Noctorium CLI, from the latest release on GitHub. It shows
-what it found and asks before it changes anything; every question has a default, which --yes takes.
+Installs Noctorium, the music player, or the Noctorium CLI, or both, from the latest release on GitHub.
+It shows what it found and asks before it changes anything; every question has a default, which --yes
+takes.
 
 Usage: noctorium-installer-cli [options]
 
   -y, --yes             ask nothing: take the defaults and install
       --product WHAT    desktop (the default), cli, or both
       --format HOW      Linux only: auto (the default), deb, rpm, arch, appimage or flatpak
+      --wizard          Windows only: open the Noctorium setup's own wizard, to choose the folder it goes
+                        in, rather than installing with a progress bar and nothing to click
       --version X.Y.Z   install release vX.Y.Z rather than the latest
+      --download-only   download and check the files and install nothing; a later run installs them
+                        without downloading them again
       --dry-run         show what would be downloaded and run, and stop there
       --list            list the release's files and their sizes
       --no-color        plain text; NO_COLOR in the environment does the same
@@ -31,12 +36,24 @@ Usage: noctorium-installer-cli [options]
   -h, --help            this
 
   auto is the distribution's own package where it is Debian, Ubuntu, Fedora, openSUSE or Arch, or one of
-  their relatives, and the AppImage everywhere else. Windows has its installer and a Mac its disk image,
-  for Apple silicon or Intel as the Mac is, and neither takes --format.
+  their relatives, and the AppImage everywhere else. A Mac has its disk image, for Apple silicon or Intel
+  as the Mac is. Windows has the .msi, which goes straight to Windows Installer as
+
+    msiexec /i <msi> /passive /norestart MSIFASTINSTALL=7
+
+  with INSTALLDIR=<folder> on the end when Noctorium is installed already, so an upgrade stays where it
+  is: Windows asks for permission, and after that there is nothing to click. A release with no .msi has
+  its setup .exe run instead. Neither Windows nor a Mac takes --format.
+
+  Both products download at once, and each is installed as soon as its own download has been checked.
+  Downloads are kept in the temporary folder, under noctorium-installer, until they are installed: a run
+  that is stopped part of the way, or an install that is cancelled, leaves what it got, and the next run
+  checks it against the release's checksums and carries on from it rather than starting again.
 
 Environment:
   GITHUB_TOKEN          raises GitHub's rate limit
   NOCTORIUM_REPOSITORY  the repository to install from, as owner/name
+  NOCTORIUM_NO_PATH     unpack the Noctorium CLI and leave your PATH, and a Mac's ~/.zprofile, as they are
   NO_COLOR              no colour
 
 Exit status: 0 when it did what was asked, 1 when it did not -- including when the answer to \"Install?\"
@@ -47,6 +64,8 @@ Examples:
   noctorium-installer-cli --yes                    install Noctorium the way this machine prefers
   noctorium-installer-cli --product both -y        Noctorium and the Noctorium CLI
   noctorium-installer-cli --format appimage        the AppImage, whatever the distribution
+  noctorium-installer-cli --wizard                 on Windows, choose the folder in the setup's own wizard
+  noctorium-installer-cli --product both --download-only -y    fetch both now, install them later
   noctorium-installer-cli --version 0.6.0 --dry-run
 ";
 
@@ -56,8 +75,10 @@ pub struct Args {
     pub yes: bool,
     pub products: Option<Products>,
     pub format: Option<Format>,
+    pub wizard: bool,
     /// Without the leading v.
     pub version: Option<String>,
+    pub download_only: bool,
     pub dry_run: bool,
     pub list: bool,
     pub no_color: bool,
@@ -123,6 +144,14 @@ pub fn parse(arguments: &[String]) -> Result<Request, UsageError> {
             "--dry-run" => {
                 takes_no_value(flag)?;
                 args.dry_run = true
+            }
+            "--download-only" => {
+                takes_no_value(flag)?;
+                args.download_only = true
+            }
+            "--wizard" => {
+                takes_no_value(flag)?;
+                args.wizard = true
             }
             "--list" => {
                 takes_no_value(flag)?;
@@ -249,6 +278,7 @@ pub fn main(arguments: &[String], launch: Launch) -> ExitCode {
             term.error(&problem.to_string());
             ExitCode::FAILURE
         }
+        Err(Failure::Said) => ExitCode::FAILURE,
     }
 }
 
@@ -257,6 +287,8 @@ enum Failure {
     Usage(String),
     NoAnswer,
     Declined,
+    /// Something did not work, and has been said already, under the product it was about.
+    Said,
 }
 
 impl From<Problem> for Failure {
@@ -281,6 +313,13 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
                 "There is only one way to install Noctorium on {name}, so --format is for Linux."
             )));
         }
+    }
+    if args.wizard && this_system != Os::Windows {
+        return Err(Failure::Usage(
+            "--wizard is for Windows, where it opens the Noctorium setup's own wizard to choose the \
+             folder. There is no wizard here to open."
+                .into(),
+        ));
     }
     let interactive = !args.yes;
     term.banner();
@@ -318,9 +357,11 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
         asking: Asking::Terminal {
             interactive: io::stdin().is_terminal(),
         },
+        wizard: args.wizard,
     };
     let plan = flow::plan(&found, options)?;
-    show_plan(term, &plan);
+    let install = !args.download_only;
+    show_plan(term, &plan, install);
 
     if args.dry_run {
         println!(
@@ -332,13 +373,19 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
         );
         return Ok(());
     }
-    if interactive && !confirm(term, "Install?")? {
+    let question = if install { "Install?" } else { "Download?" };
+    if interactive && !confirm(term, question)? {
         return Err(Failure::Declined);
     }
 
-    carry_out(term, &plan)?;
-    finish(term, &plan);
-    Ok(())
+    let (finished, outcome) = carry_out(term, &plan, install);
+    finish(term, &plan, &finished, install);
+    match outcome {
+        Ok(()) => Ok(()),
+        // Said already, under the product it was about.
+        Err(_) if finished.contains(&Some(false)) => Err(Failure::Said),
+        Err(problem) => Err(Failure::Problem(problem)),
+    }
 }
 
 // ---------------------------------------------------------------- what was found
@@ -394,7 +441,7 @@ fn show_files(term: &Term, found: &Found) {
     let ours: Vec<(String, &'static str)> = flow::offers(found)
         .into_iter()
         .filter_map(|offer| offer.asset.map(|a| (a.name, "Noctorium")))
-        .chain(cli_asset(found).map(|a| (a.name.clone(), "Noctorium CLI")))
+        .chain(flow::cli_asset(found).map(|a| (a.name.clone(), "Noctorium CLI")))
         .collect();
     let width = found
         .release
@@ -418,34 +465,41 @@ fn show_files(term: &Term, found: &Found) {
     }
 }
 
-fn cli_asset(found: &Found) -> Option<&Asset> {
-    let arch = found.system.arch?;
-    let wanted = Method::cli_for(found.system.os).wanted();
-    found.release.asset_for(wanted, arch)
-}
-
 // ---------------------------------------------------------------- questions
 
 fn choose_products(term: &Term, found: &Found) -> Result<Products, Failure> {
-    let cli = cli_asset(found).is_some();
+    let cli = flow::cli_asset(found).map(|a| a.size);
+    // What this machine would download for Noctorium, which on Linux is the format auto would pick.
+    let desktop = flow::offers(found)
+        .into_iter()
+        .find(|o| o.recommended)
+        .and_then(|o| o.asset)
+        .map(|a| a.size);
+    let sized = |what: &str, bytes: Option<u64>| match bytes {
+        Some(bytes) => format!("{what}, {}", size(bytes)),
+        None => what.to_string(),
+    };
     let missing = format!("Not in {} yet.", found.release.tag);
     let choices = [
         Choice {
             label: "Noctorium".into(),
-            detail: "the music player, in a window".into(),
+            detail: sized("the music player, in a window", desktop),
             unavailable: None,
             recommended: true,
         },
         Choice {
             label: "Noctorium CLI".into(),
-            detail: "the same player, in a terminal".into(),
-            unavailable: (!cli).then(|| missing.clone()),
+            detail: sized("the same player, in a terminal", cli),
+            unavailable: cli.is_none().then(|| missing.clone()),
             recommended: false,
         },
         Choice {
             label: "Both".into(),
-            detail: String::new(),
-            unavailable: (!cli).then(|| missing.clone()),
+            detail: match (desktop, cli) {
+                (Some(d), Some(c)) => format!("{}, downloaded at once", size(d + c)),
+                _ => String::new(),
+            },
+            unavailable: cli.is_none().then(|| missing.clone()),
             recommended: false,
         },
     ];
@@ -516,7 +570,7 @@ fn read_answer() -> Result<String, Failure> {
 
 // ---------------------------------------------------------------- the plan
 
-fn show_plan(term: &Term, plan: &Plan) {
+fn show_plan(term: &Term, plan: &Plan, install: bool) {
     println!(
         "
   {}",
@@ -529,23 +583,69 @@ fn show_plan(term: &Term, plan: &Plan) {
             term.paint(Paint::Bold, plan.version()),
             term.paint(Paint::Dim, item.method.describe())
         );
+        let already = match item.on_disk {
+            OnDisk::Nothing => String::new(),
+            OnDisk::Part(have) => format!(
+                "  {}",
+                term.paint(
+                    Paint::Dim,
+                    &format!(
+                        "{} of it here already; the rest carries on from there",
+                        size(have)
+                    )
+                )
+            ),
+            OnDisk::Whole => format!(
+                "  {}",
+                term.paint(
+                    Paint::Dim,
+                    "downloaded already; checked again, and used rather than fetched"
+                )
+            ),
+        };
         term.detail(
             "download",
             &format!(
-                "{}  {}",
+                "{}  {}{already}",
                 item.asset.name,
                 term.paint(Paint::Dim, &size(item.asset.size))
             ),
         );
+        if !install {
+            continue;
+        }
         for (index, action) in item.actions.iter().enumerate() {
             term.detail(
                 if index == 0 { "install" } else { "then" },
                 &action.describe(&plan.places),
             );
         }
+        if item
+            .actions
+            .iter()
+            .any(|a| matches!(a, crate::install::Action::InstallMsi { wizard: false, .. }))
+        {
+            term.detail(
+                "",
+                &term.paint(
+                    Paint::Dim,
+                    "--wizard opens the setup's own wizard instead, to choose the folder",
+                ),
+            );
+        }
     }
     if plan.items.len() > 1 {
-        term.detail("in all", &size((plan.megabytes() * 1_048_576.0) as u64));
+        term.detail(
+            "in all",
+            &format!(
+                "{}  {}",
+                size((plan.megabytes() * 1_048_576.0) as u64),
+                term.paint(Paint::Dim, "downloaded at once")
+            ),
+        );
+    }
+    if !install {
+        term.detail("kept in", &plan.downloads.display().to_string());
     }
     for note in &plan.notes {
         println!();
@@ -559,57 +659,64 @@ fn show_plan(term: &Term, plan: &Plan) {
     }
 }
 
-fn carry_out(term: &Term, plan: &Plan) -> Result<(), Problem> {
-    let mut bar: Option<Bar> = None;
-    let result = flow::carry_out(plan, &mut |step| match step {
-        Step::Downloading { item, done, total } => {
-            let bar = bar.get_or_insert_with(|| {
-                println!(
-                    "\n  {} {}",
-                    term.paint(Paint::Accent, term.glyphs.down),
-                    term.paint(Paint::Bold, &plan.items[item].asset.name)
-                );
-                Bar::new()
-            });
-            bar.update(term, done, total);
-        }
-        Step::Verified { hash, .. } => {
-            if let Some(mut finished) = bar.take() {
-                finished.finish(term);
-            }
-            let short = format!("{}...{}", &hash[..8], &hash[hash.len() - 8..]);
-            println!(
-                "  {} Checksum matches SHA256SUMS.txt  {}",
-                term.paint(Paint::Good, term.glyphs.tick),
-                term.paint(Paint::Dim, &short)
-            );
-        }
-        Step::Installing { command, .. } => {
-            println!(
-                "  {} {}",
-                term.paint(Paint::Accent, term.glyphs.arrow),
-                term.paint(Paint::Bold, &command)
-            );
-            let _ = io::stdout().flush();
-        }
-        Step::Installed { item } => {
-            println!(
-                "  {} {} is installed.",
-                term.paint(Paint::Good, term.glyphs.tick),
-                plan.items[item].product.name()
-            );
-        }
-    });
-    // A download that stopped half way leaves its bar mid-line; the error goes underneath it.
-    if bar.is_some() && result.is_err() {
-        println!();
-    }
-    result
+/// Downloads, checks and installs what the plan says, drawing it as it goes, and says how each product
+/// ended: `Some(true)` for done, `Some(false)` for failed -- which has been said, under it -- and `None`
+/// for never got that far.
+fn carry_out(term: &Term, plan: &Plan, install: bool) -> (Vec<Option<bool>>, Result<(), Problem>) {
+    let names: Vec<&str> = plan.items.iter().map(|i| i.asset.name.as_str()).collect();
+    let together = if plan.items.iter().all(|i| i.on_disk == OnDisk::Whole) {
+        ", downloaded already"
+    } else if names.len() > 1 {
+        ", at once"
+    } else {
+        ""
+    };
+    // Said when the first thing happens rather than now, so that something that stops it all before it
+    // starts -- Noctorium being open -- is not said under a download that never began.
+    let header = format!(
+        "\n  {} {}{}",
+        term.paint(Paint::Accent, term.glyphs.down),
+        term.paint(Paint::Bold, &names.join(" and ")),
+        term.paint(Paint::Dim, together)
+    );
+    let mut screen = Screen::new(term, plan, install);
+    screen.header = Some(header);
+    let outcome = if install {
+        flow::carry_out(plan, &mut |step| screen.step(step))
+    } else {
+        flow::download_only(plan, &mut |step| screen.step(step))
+    };
+    screen.end();
+    (screen.finished, outcome)
 }
 
-fn finish(term: &Term, plan: &Plan) {
+fn finish(term: &Term, plan: &Plan, finished: &[Option<bool>], install: bool) {
+    let done: Vec<&flow::Item> = plan
+        .items
+        .iter()
+        .zip(finished)
+        .filter(|(_, f)| **f == Some(true))
+        .map(|(item, _)| item)
+        .collect();
+    if done.is_empty() {
+        return;
+    }
     println!();
-    for item in &plan.items {
+    if !install {
+        term.say(&format!(
+            "Downloaded and checked, and kept in {}. Run this again without --download-only to \
+             install {}: {} not be downloaded again.",
+            plan.downloads.display(),
+            if done.len() > 1 { "them" } else { "it" },
+            if done.len() > 1 {
+                "they will"
+            } else {
+                "it will"
+            },
+        ));
+        return;
+    }
+    for item in done {
         println!(
             "  {} {}",
             term.paint(
@@ -624,15 +731,233 @@ fn finish(term: &Term, plan: &Plan) {
 
 // ---------------------------------------------------------------- progress
 
+/// What the terminal shows while the work is done: one bar for everything still coming down, on the last
+/// line, and above it a line for each thing that happens, to whichever product it happens.
+///
+/// While something is being installed the bar is not drawn, and anything else that happens meanwhile
+/// waits: an installer that writes to the terminal, or a sudo asking for a password there, would have its
+/// line drawn over by a bar redrawn ten times a second.
+struct Screen<'a> {
+    term: &'a Term,
+    plan: &'a Plan,
+    /// Whether the products are being installed, or only downloaded.
+    install: bool,
+    /// The line that goes above everything, until it has.
+    header: Option<String>,
+    bar: Bar,
+    /// Each download's bytes so far, its size, and where it started this run, which is not nothing when
+    /// it carried on from an earlier one.
+    done: Vec<u64>,
+    total: Vec<u64>,
+    from: Vec<Option<u64>>,
+    coming: Vec<bool>,
+    /// Whether the bar has been drawn at all, which it never is when everything was downloaded already.
+    shown: bool,
+    /// The product being installed, while one is.
+    installing: Option<usize>,
+    held: Vec<Held>,
+    finished: Vec<Option<bool>>,
+}
+
+/// A line kept back while something is being installed.
+enum Held {
+    Out(String),
+    Error(String),
+}
+
+impl<'a> Screen<'a> {
+    fn new(term: &'a Term, plan: &'a Plan, install: bool) -> Screen<'a> {
+        let count = plan.items.len();
+        Screen {
+            term,
+            plan,
+            install,
+            header: None,
+            bar: Bar::new(),
+            done: plan
+                .items
+                .iter()
+                .map(|i| match i.on_disk {
+                    OnDisk::Part(have) => have,
+                    _ => 0,
+                })
+                .collect(),
+            // A whole file from an earlier run is expected to be used rather than fetched, so it is not
+            // counted until it turns out it has to be.
+            total: plan
+                .items
+                .iter()
+                .map(|i| match i.on_disk {
+                    OnDisk::Whole => 0,
+                    _ => i.asset.size,
+                })
+                .collect(),
+            from: vec![None; count],
+            coming: vec![true; count],
+            shown: false,
+            installing: None,
+            held: Vec::new(),
+            finished: vec![None; count],
+        }
+    }
+
+    fn step(&mut self, step: Step) {
+        let term = self.term;
+        let plan = self.plan;
+        if let Some(header) = self.header.take() {
+            println!("{header}");
+        }
+        match step {
+            Step::Downloading { item, done, total } => {
+                self.from[item].get_or_insert(done);
+                self.done[item] = done;
+                self.total[item] = total;
+                if self.installing.is_none() {
+                    self.draw_bar();
+                }
+            }
+            Step::Verified { item, how } => {
+                self.coming[item] = false;
+                if how == Fetched::AlreadyHere {
+                    self.done[item] = 0;
+                    self.total[item] = 0;
+                }
+                if !self.coming.contains(&true) && self.shown && self.installing.is_none() {
+                    self.bar.finish(term);
+                    self.shown = false;
+                }
+                let name = &plan.items[item].asset.name;
+                let hash = &plan.items[item].published;
+                let short = format!("{}...{}", &hash[..8], &hash[hash.len() - 8..]);
+                let what = match how {
+                    Fetched::Downloaded => format!("{name} matches SHA256SUMS.txt"),
+                    Fetched::Resumed { from } => format!(
+                        "{name}, carried on from {} an earlier run left, matches SHA256SUMS.txt",
+                        megabytes(from)
+                    ),
+                    Fetched::AlreadyHere => {
+                        format!("{name} was downloaded already, and matches SHA256SUMS.txt")
+                    }
+                };
+                self.say(format!(
+                    "  {} {what}  {}",
+                    term.paint(Paint::Good, term.glyphs.tick),
+                    term.paint(Paint::Dim, &short)
+                ));
+                // Downloading only, this is where a product ends.
+                if !self.install {
+                    self.finished[item] = Some(true);
+                }
+            }
+            Step::Installing { item, command } => {
+                if self.installing.is_none() {
+                    self.bar.clear();
+                }
+                self.installing = Some(item);
+                println!(
+                    "  {} {}",
+                    term.paint(Paint::Accent, term.glyphs.arrow),
+                    term.paint(Paint::Bold, &command)
+                );
+                let _ = io::stdout().flush();
+            }
+            Step::Installed { item, note } => {
+                self.installing = None;
+                self.finished[item] = Some(true);
+                self.say(format!(
+                    "  {} {} is installed.",
+                    term.paint(Paint::Good, term.glyphs.tick),
+                    plan.items[item].product.name()
+                ));
+                if let Some(note) = note {
+                    self.say(format!(
+                        "  {} {note}",
+                        term.paint(Paint::Warn, term.glyphs.warn)
+                    ));
+                }
+                self.release();
+            }
+            Step::Failed { item, why } => {
+                self.coming[item] = false;
+                if self.installing == Some(item) {
+                    self.installing = None;
+                }
+                self.finished[item] = Some(false);
+                let name = plan.items[item].product.name();
+                self.complain(format!("{name} was not installed. {why}"));
+                self.release();
+            }
+        }
+    }
+
+    /// A line above the bar, or kept back until the install that is running has finished.
+    fn say(&mut self, line: String) {
+        if self.installing.is_some() {
+            self.held.push(Held::Out(line));
+            return;
+        }
+        self.bar.clear();
+        println!("{line}");
+        let _ = io::stdout().flush();
+    }
+
+    fn complain(&mut self, text: String) {
+        if self.installing.is_some() {
+            self.held.push(Held::Error(text));
+            return;
+        }
+        self.bar.clear();
+        let _ = io::stdout().flush();
+        self.term.error(&text);
+    }
+
+    /// Everything kept back while an install ran, now that it has finished -- after the bar, finished, if
+    /// what finished while the install ran was the last of the downloads.
+    fn release(&mut self) {
+        if !self.coming.contains(&true) && self.shown {
+            self.bar.finish(self.term);
+            self.shown = false;
+        }
+        for held in std::mem::take(&mut self.held) {
+            match held {
+                Held::Out(line) => self.say(line),
+                Held::Error(text) => self.complain(text),
+            }
+        }
+    }
+
+    fn draw_bar(&mut self) {
+        let done: u64 = self.done.iter().sum();
+        let total: u64 = self.total.iter().sum();
+        let fetched: u64 = self
+            .done
+            .iter()
+            .zip(&self.from)
+            .map(|(done, from)| done.saturating_sub(from.unwrap_or(*done)))
+            .sum();
+        self.shown = true;
+        self.bar.update(self.term, done, total, fetched);
+    }
+
+    /// The bar ended where it was, if a failure left it half way.
+    fn end(&mut self) {
+        if self.shown {
+            self.bar.clear();
+        }
+        let _ = io::stdout().flush();
+    }
+}
+
 /// The download line: a bar, how much, how fast, and how long is left.
 struct Bar {
     started: Instant,
     drawn: Option<Instant>,
-    /// The last sample the speed was worked out from.
-    sample: (Instant, u64),
+    /// The last sample the speed was worked out from: when, and how much had been fetched this run.
+    sample: Option<(Instant, u64)>,
     /// Bytes a second, smoothed so one slow second does not swing the estimate by a minute.
     rate: Option<f64>,
-    /// How much of the line was written last time, so a shorter line can cover it.
+    /// How much of the line was written last time, so a shorter line can cover it, and so it can be
+    /// cleared for a line to go above it. Nothing when the bar is not on the screen.
     width: usize,
     /// For output that is not a terminal: the last tenth reported.
     tenth: u64,
@@ -642,11 +967,10 @@ struct Bar {
 
 impl Bar {
     fn new() -> Bar {
-        let now = Instant::now();
         Bar {
-            started: now,
+            started: Instant::now(),
             drawn: None,
-            sample: (now, 0),
+            sample: None,
             rate: None,
             width: 0,
             tenth: 0,
@@ -655,19 +979,26 @@ impl Bar {
         }
     }
 
-    fn update(&mut self, term: &Term, done: u64, total: u64) {
+    /// [done] of [total] is what the bar shows; [fetched] is what has come down this run, which is
+    /// what the speed is worked out from -- a download that carried on from an earlier run did not
+    /// fetch the part it started with in no time at all.
+    fn update(&mut self, term: &Term, done: u64, total: u64, fetched: u64) {
         self.done = done;
         self.total = total;
         let now = Instant::now();
-        let (then, before) = self.sample;
-        let elapsed = now.duration_since(then).as_secs_f64();
-        if elapsed >= 0.5 {
-            let instant = done.saturating_sub(before) as f64 / elapsed;
-            self.rate = Some(match self.rate {
-                Some(rate) => rate * 0.7 + instant * 0.3,
-                None => instant,
-            });
-            self.sample = (now, done);
+        match self.sample {
+            None => self.sample = Some((now, fetched)),
+            Some((then, before)) => {
+                let elapsed = now.duration_since(then).as_secs_f64();
+                if elapsed >= 0.5 {
+                    let instant = fetched.saturating_sub(before) as f64 / elapsed;
+                    self.rate = Some(match self.rate {
+                        Some(rate) => rate * 0.7 + instant * 0.3,
+                        None => instant,
+                    });
+                    self.sample = Some((now, fetched));
+                }
+            }
         }
 
         if !term.live {
@@ -684,9 +1015,10 @@ impl Bar {
             }
             return;
         }
-        let due = self
-            .drawn
-            .is_none_or(|drawn| now.duration_since(drawn) >= Duration::from_millis(100));
+        let due = self.width == 0
+            || self
+                .drawn
+                .is_none_or(|drawn| now.duration_since(drawn) >= Duration::from_millis(100));
         if due || (total > 0 && done >= total) {
             self.drawn = Some(now);
             self.draw(term, false);
@@ -735,10 +1067,22 @@ impl Bar {
         let _ = io::stdout().flush();
     }
 
+    /// Takes the bar off its line, so that something else can be written there; the next update draws it
+    /// again underneath.
+    fn clear(&mut self) {
+        if self.width > 0 {
+            print!("\r{}\r", " ".repeat(self.width));
+            self.width = 0;
+            let _ = io::stdout().flush();
+        }
+    }
+
+    /// Draws the bar a last time, as finished, and leaves it on its line.
     fn finish(&mut self, term: &Term) {
         if term.live {
             self.draw(term, true);
             println!();
+            self.width = 0;
         } else {
             let seconds = self.started.elapsed().as_secs_f64();
             println!(
@@ -1179,7 +1523,8 @@ mod tests {
     #[test]
     fn every_flag_is_read() {
         let args = install(
-            "--yes --product both --format appimage --version 0.6.0 --dry-run --list --no-color",
+            "--yes --product both --format appimage --wizard --version 0.6.0 --download-only \
+             --dry-run --list --no-color",
         );
         assert_eq!(
             args,
@@ -1187,12 +1532,16 @@ mod tests {
                 yes: true,
                 products: Some(Products::Both),
                 format: Some(Format::AppImage),
+                wizard: true,
                 version: Some("0.6.0".into()),
+                download_only: true,
                 dry_run: true,
                 list: true,
                 no_color: true,
             }
         );
+        assert!(install("--wizard").wizard);
+        assert!(install("--product cli --download-only").download_only);
         assert!(install("-y").yes);
         assert!(install("--no-colour").no_color, "and in British");
     }
@@ -1250,6 +1599,8 @@ mod tests {
         assert!(refused("--version 1..2").contains("not a version"));
         assert!(refused("--version 1.2-").contains("not a version"));
         assert!(refused("--yes=no").contains("takes no value"));
+        assert!(refused("--wizard=yes").contains("takes no value"));
+        assert!(refused("--download-only=1").contains("takes no value"));
     }
 
     #[test]
@@ -1280,6 +1631,20 @@ mod tests {
             ]
         );
         assert!(lines.iter().all(|l| l.chars().count() <= 20));
+    }
+
+    /// What will run is in the help, word for word, so nobody has to install it to find out.
+    #[test]
+    fn the_help_says_what_runs_on_windows_and_how_to_choose_the_folder() {
+        assert!(USAGE.contains("msiexec /i <msi> /passive /norestart MSIFASTINSTALL=7"));
+        assert!(USAGE.contains("INSTALLDIR=<folder>"));
+        assert!(USAGE.contains("--wizard"));
+        assert!(USAGE.contains("--download-only"));
+        assert!(USAGE.contains("NOCTORIUM_NO_PATH"));
+        // The usage is printed into terminals as narrow as a hundred and ten columns.
+        for line in USAGE.lines() {
+            assert!(line.chars().count() <= 106, "too wide: {line}");
+        }
     }
 
     #[test]

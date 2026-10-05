@@ -10,6 +10,9 @@
 //! A Mac has no package manager of its own either, and installing an application there has only ever
 //! meant copying it out of its disk image into Applications. This does that, the way a person dragging it
 //! across would, minus the window to drag it in.
+//!
+//! Windows has Windows Installer, and the .msi goes straight to it, the way Noctorium's own updater hands
+//! it over: with a progress bar and nothing to click, into the folder Noctorium is already in.
 
 use crate::archive;
 use crate::github::{Problem, Wanted};
@@ -38,10 +41,16 @@ pub const PROFILE_MARK: &str = "# Added by the Noctorium installer";
 /// home folder is ever renamed or the file is copied to another Mac.
 pub const PROFILE_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
 
+/// The name Noctorium is listed under in Windows' Apps & features, which is how the folder it is in is
+/// found again.
+pub const WINDOWS_DISPLAY_NAME: &str = "Noctorium";
+
 /// How one file gets installed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
-    /// Windows: run the installer and let it do its own asking.
+    /// Windows: the .msi, handed to msiexec.
+    WindowsMsi,
+    /// Windows, for a release with no .msi: run the setup .exe and let it do its own asking.
     WindowsSetup,
     /// macOS: Noctorium.app copied out of the disk image into /Applications, or into ~/Applications for
     /// an account that cannot write there.
@@ -90,6 +99,7 @@ impl Method {
     /// The release file this takes.
     pub fn wanted(self) -> Wanted {
         match self {
+            Method::WindowsMsi => Wanted::WindowsMsi,
             Method::WindowsSetup => Wanted::WindowsSetup,
             Method::MacDiskImage => Wanted::MacDiskImage,
             Method::Apt => Wanted::DebianPackage,
@@ -115,6 +125,7 @@ impl Method {
     /// The format, as a menu shows it.
     pub fn describe(self) -> &'static str {
         match self {
+            Method::WindowsMsi => "Windows Installer package (.msi)",
             Method::WindowsSetup => "Windows installer (.exe)",
             Method::MacDiskImage => "macOS disk image (.dmg)",
             Method::Apt => "Debian package (.deb)",
@@ -130,6 +141,7 @@ impl Method {
     /// What it means in practice, in a few words, for the line beside it in a menu.
     pub fn explain(self) -> &'static str {
         match self {
+            Method::WindowsMsi => "Windows Installer, with a progress bar and nothing to click",
             Method::WindowsSetup => "the usual installer, which asks its own questions",
             Method::MacDiskImage => "Noctorium.app, copied into Applications as if dragged there",
             Method::Apt => "through apt, which fetches what it needs",
@@ -159,6 +171,20 @@ pub struct Places {
     /// The folder a Mac application goes in: `/Applications` when this user can write to it, and
     /// `~/Applications` when not. Nothing anywhere else.
     pub applications: Option<PathBuf>,
+    /// The folder Noctorium is installed in already, on Windows, as the entry Apps & features lists it
+    /// under says; nothing when it is not installed, and nothing anywhere else.
+    ///
+    /// The .msi does not remember a folder chosen at the first install. Given nothing, it would put the
+    /// new version in Program Files and leave whoever chose somewhere else wondering where it went, so
+    /// this is passed to it, as Noctorium's own updater passes it.
+    pub installed: Option<PathBuf>,
+    /// Whether the user's PATH -- and on a Mac the shell profile that sets it -- is to be left as it is:
+    /// `NOCTORIUM_NO_PATH` in the environment.
+    ///
+    /// For trying the install out somewhere it can do no harm: with LOCALAPPDATA or HOME pointed at a
+    /// folder of its own, every file the Noctorium CLI is unpacked to lands in there, but the PATH is the
+    /// account's own and would still be changed. With this set the CLI is unpacked and nothing else.
+    pub leave_path: bool,
 }
 
 impl Places {
@@ -193,6 +219,8 @@ impl Places {
             data,
             programs,
             applications,
+            installed: crate::system::installed_folder(WINDOWS_DISPLAY_NAME),
+            leave_path: std::env::var_os("NOCTORIUM_NO_PATH").is_some_and(|v| !v.is_empty()),
         }
     }
 
@@ -276,6 +304,14 @@ impl Places {
 pub enum Action {
     /// A program, run and waited for. The command is the whole of what it does, so it can be shown.
     Run { program: String, args: Vec<String> },
+    /// The .msi handed to msiexec, into [folder] when Noctorium is installed there already, and with a
+    /// progress bar and nothing to click unless [wizard] asks for the setup's own pages -- which is where
+    /// somebody who wants to choose the folder chooses it.
+    InstallMsi {
+        msi: PathBuf,
+        folder: Option<PathBuf>,
+        wizard: bool,
+    },
     /// An AppImage copied into place, made executable and given a menu entry.
     PlaceAppImage {
         from: PathBuf,
@@ -283,11 +319,13 @@ pub enum Action {
         entry: PathBuf,
         icon: PathBuf,
     },
-    /// The Noctorium CLI unpacked, and then linked from [link] on Linux or put on the PATH on Windows.
+    /// The Noctorium CLI unpacked, and then linked from [link] on Linux and a Mac, or -- when [path] says
+    /// so -- its folder put on the user's PATH on Windows.
     UnpackCli {
         archive: PathBuf,
         into: PathBuf,
         link: Option<PathBuf>,
+        path: bool,
     },
     /// The Flatpak taken out if it is installed already, keeping its data, so a bundle can go in.
     ClearFlatpak { id: String },
@@ -301,15 +339,22 @@ pub enum Action {
 ///
 /// Built rather than run, so the caller can print it before anything happens -- an installer that asks
 /// for a password should have said what it is about to do first -- and so it can be tested without
-/// installing anything.
+/// installing anything. [wizard] is for the .msi alone, and asks for its own pages rather than a progress
+/// bar; the setup .exe has nothing else to offer.
 pub fn actions_for(
     method: Method,
     file: &Path,
     escalate_with: Option<&str>,
     places: &Places,
+    wizard: bool,
 ) -> Result<Vec<Action>, Problem> {
     let path = file.to_string_lossy().to_string();
     let actions = match method {
+        Method::WindowsMsi => vec![Action::InstallMsi {
+            msi: file.to_path_buf(),
+            folder: places.installed.clone(),
+            wizard,
+        }],
         Method::WindowsSetup => vec![Action::Run {
             program: path,
             args: vec![],
@@ -381,11 +426,13 @@ pub fn actions_for(
             archive: file.to_path_buf(),
             into: places.cli_folder(true)?,
             link: None,
+            path: !places.leave_path,
         }],
         Method::CliLinux | Method::CliMac => vec![Action::UnpackCli {
             archive: file.to_path_buf(),
             into: places.cli_folder(false)?,
             link: Some(places.user_bin()?.join("noctorium")),
+            path: false,
         }],
         Method::MacDiskImage => vec![Action::PlaceApp {
             image: file.to_path_buf(),
@@ -438,6 +485,16 @@ impl Action {
     pub fn describe(&self, places: &Places) -> String {
         match self {
             Action::Run { program, args } => command_line(program, args),
+            // msiexec by its name rather than by the whole of %SystemRoot%\System32, which is where it is
+            // run from and which nobody needs telling.
+            Action::InstallMsi {
+                msi,
+                folder,
+                wizard,
+            } => format!(
+                "msiexec {}",
+                msiexec_arguments(msi, folder.as_deref(), *wizard)
+            ),
             Action::PlaceAppImage { to, entry, .. } => format!(
                 "copy it to {}, make it executable, and add it to the menu as {}",
                 places.show(to),
@@ -453,9 +510,21 @@ impl Action {
                 places.show(link)
             ),
             Action::UnpackCli {
-                into, link: None, ..
+                into,
+                link: None,
+                path: true,
+                ..
             } => format!(
                 "unpack it into {} and add that folder to your PATH",
+                places.show(into)
+            ),
+            Action::UnpackCli {
+                into,
+                link: None,
+                path: false,
+                ..
+            } => format!(
+                "unpack it into {}, and leave your PATH as it is (NOCTORIUM_NO_PATH is set)",
                 places.show(into)
             ),
             Action::ClearFlatpak { id } => format!(
@@ -472,24 +541,36 @@ impl Action {
         }
     }
 
-    /// Does it.
-    pub fn perform(&self) -> Result<(), Problem> {
+    /// Does it, and says anything worth saying about how it went -- which so far is only Windows asking
+    /// to be restarted.
+    pub fn perform(&self) -> Result<Option<String>, Problem> {
+        let done = |result: Result<(), Problem>| result.map(|()| None);
         match self {
-            Action::Run { program, args } => run(program, args),
+            Action::Run { program, args } => done(run(program, args)),
+            Action::InstallMsi {
+                msi,
+                folder,
+                wizard,
+            } => {
+                // Asked again, because the download took long enough for somebody to have opened it.
+                refuse_if_open_on_windows()?;
+                run_msiexec(&msiexec_arguments(msi, folder.as_deref(), *wizard))
+            }
             Action::PlaceAppImage {
                 from,
                 to,
                 entry,
                 icon,
-            } => place_appimage(from, to, entry, icon),
+            } => done(place_appimage(from, to, entry, icon)),
             Action::UnpackCli {
                 archive,
                 into,
                 link,
-            } => install_cli(archive, into, link.as_deref()),
-            Action::ClearFlatpak { id } => clear_flatpak(id),
-            Action::PlaceApp { image, into } => place_app(image, into),
-            Action::AddToProfile { profile } => add_to_profile(profile),
+                path,
+            } => done(install_cli(archive, into, link.as_deref(), *path)),
+            Action::ClearFlatpak { id } => done(clear_flatpak(id)),
+            Action::PlaceApp { image, into } => done(place_app(image, into)),
+            Action::AddToProfile { profile } => done(add_to_profile(profile)),
         }
     }
 }
@@ -497,15 +578,129 @@ impl Action {
 /// Anything that would make installing with [method] fail, found out before the download rather than
 /// after it.
 ///
-/// On a Mac that is Noctorium being open. A running application reads its own files as it goes -- a
-/// Java one more than most, loading classes from its jars as they are first wanted -- and swapping them
-/// out from under it is how it crashes; finding that out after three hundred megabytes have come down
-/// would waste them.
+/// On a Mac, and for the .msi on Windows, that is Noctorium being open. A running application reads its
+/// own files as it goes -- a Java one more than most, loading classes from its jars as they are first
+/// wanted -- and swapping them out from under it is how it crashes; finding that out after three hundred
+/// megabytes have come down would waste them. Windows will not replace a file that is open at all, and
+/// with nothing to click, there is nobody to ask whether to close it.
 pub fn check_before_download(method: Method) -> Result<(), Problem> {
     match method {
         Method::MacDiskImage => refuse_if_running(),
+        Method::WindowsMsi => refuse_if_open_on_windows(),
         _ => Ok(()),
     }
+}
+
+/// The program Noctorium is started as on Windows, which is jpackage's launcher in its install folder.
+/// Capitalised, as it is on disk, which is what tells it from the Noctorium CLI's `noctorium.exe`.
+const WINDOWS_PROGRAM: &str = "Noctorium.exe";
+
+fn refuse_if_open_on_windows() -> Result<(), Problem> {
+    if crate::system::running(WINDOWS_PROGRAM) {
+        return Err(Problem::Local(
+            "Noctorium is open. Quit it -- from its menu, or from its icon by the clock if it is still \
+             there -- and run this again: Windows cannot replace a program while it is running. Nothing \
+             has been changed."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// What msiexec is given, as one line, with the same arguments Noctorium's own updater gives it:
+/// `/i "<msi>" /passive /norestart MSIFASTINSTALL=7`, and `INSTALLDIR="<folder>"` when Noctorium is
+/// installed already. `/passive` is a progress bar and nothing to click, since saying yes here was the
+/// decision and the permission prompt Windows puts up is still there to refuse at; `/norestart` leaves a
+/// restart, should one be wanted, for later; `MSIFASTINSTALL=7` skips the System Restore point and all of
+/// the costing but the files', which is most of an msi's own overhead. The wizard is the same without
+/// `/passive`, and starts on the folder Noctorium is already in.
+///
+/// One line rather than a list of arguments, because msiexec reads its own command line and not the way a
+/// list is quoted for it: Rust, like every C runtime, would quote `INSTALLDIR=C:\Program Files\Noctorium`
+/// whole, and msiexec wants the quotes around the value. No Windows path can contain a double quote, so a
+/// pair of them is all the quoting a path needs -- spaces, apostrophes and accents included.
+///
+/// The folder loses the backslash it ends with, which is how Windows Installer writes InstallLocation:
+/// before a closing quote it is where command-line parsers disagree with each other, and Windows Installer
+/// puts it back on a folder itself. A drive's own root keeps it, since `C:` alone is a different place.
+pub fn msiexec_arguments(msi: &Path, folder: Option<&Path>, wizard: bool) -> String {
+    let mut line = format!("/i \"{}\"", msi.to_string_lossy());
+    if !wizard {
+        line.push_str(" /passive");
+    }
+    line.push_str(" /norestart MSIFASTINSTALL=7");
+    if let Some(folder) = folder {
+        let folder = folder.to_string_lossy();
+        let mut trimmed = folder.trim_end_matches(['\\', '/']);
+        if trimmed.len() == 2 && trimmed.ends_with(':') {
+            trimmed = &folder[..3.min(folder.len())];
+        }
+        line.push_str(&format!(" INSTALLDIR=\"{trimmed}\""));
+    }
+    line
+}
+
+/// msiexec, from System32 rather than from whatever PATH says: an msiexec.exe somewhere else on it is not
+/// one to hand three hundred megabytes and administrator rights to.
+fn msiexec() -> PathBuf {
+    let windows = std::env::var_os("SystemRoot")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    windows.join("System32").join("msiexec.exe")
+}
+
+/// What Windows Installer's exit status means, for somebody: done, done with a restart wanted, or why it
+/// was not done.
+pub fn msiexec_outcome(code: Option<i32>) -> Result<Option<String>, Problem> {
+    match code {
+        Some(0) => Ok(None),
+        Some(3010) => Ok(Some(
+            "Windows says it needs restarting to finish installing it. Noctorium can be started \
+             before then."
+                .into(),
+        )),
+        Some(1602) => Err(Problem::Local(
+            "The install was cancelled, and nothing was changed.".into(),
+        )),
+        Some(1618) => Err(Problem::Local(
+            "Windows is installing something else already. Let that finish, then try again.".into(),
+        )),
+        Some(code) => Err(Problem::Local(format!(
+            "msiexec finished with exit code {code}. Nothing was installed, or the install was \
+             cancelled."
+        ))),
+        None => Err(Problem::Local(
+            "msiexec ended without an exit code. Nothing was installed, or the install was cancelled."
+                .into(),
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn run_msiexec(arguments: &str) -> Result<Option<String>, Problem> {
+    let program = msiexec();
+    let status = verbatim(&program, arguments)
+        .status()
+        .map_err(|e| Problem::Local(format!("Could not start {}: {e}", program.display())))?;
+    msiexec_outcome(status.code())
+}
+
+/// [program], to be given [arguments] exactly as they are written, with nothing quoted or escaped.
+#[cfg(windows)]
+fn verbatim(program: &Path, arguments: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut command = Command::new(program);
+    command.raw_arg(arguments);
+    command
+}
+
+#[cfg(not(windows))]
+fn run_msiexec(_: &str) -> Result<Option<String>, Problem> {
+    Err(Problem::Local(format!(
+        "{} is Windows' own, and this is not Windows.",
+        msiexec().display()
+    )))
 }
 
 /// What `pgrep -f` looks for: the program inside any Noctorium.app, wherever it was started from -- the
@@ -1003,8 +1198,14 @@ fn make_executable(_: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Unpacks the Noctorium CLI and makes `noctorium` something a new terminal can run.
-fn install_cli(archive: &Path, into: &Path, link: Option<&Path>) -> Result<(), Problem> {
+/// Unpacks the Noctorium CLI and makes `noctorium` something a new terminal can run: through [link], or
+/// by putting its folder on the user's PATH when [path] says to.
+fn install_cli(
+    archive: &Path,
+    into: &Path,
+    link: Option<&Path>,
+    path: bool,
+) -> Result<(), Problem> {
     archive::install_folder(archive, into)?;
     // For the same reason as the application's: a flagged launcher, or a flagged Java runtime under it,
     // would be stopped by Gatekeeper the first time it was run.
@@ -1026,12 +1227,13 @@ fn install_cli(archive: &Path, into: &Path, link: Option<&Path>) -> Result<(), P
 
     match link {
         Some(link) => link_launcher(&launcher, link),
-        None => {
+        None if path => {
             // The folder the launcher is in, which is the install folder itself for the published
             // archive and its bin folder for one laid out the other way.
             let folder = launcher.parent().unwrap_or(into);
             add_to_user_path(folder)
         }
+        None => Ok(()),
     }
 }
 
@@ -1220,7 +1422,7 @@ fn add_to_user_path(_: &Path) -> Result<(), Problem> {
 /// What to say at the end about how to start what was just installed.
 pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> String {
     match method {
-        Method::WindowsSetup => {
+        Method::WindowsMsi | Method::WindowsSetup => {
             "Start it from the Start menu, or from the shortcut on the desktop.".into()
         }
         Method::MacDiskImage => format!(
@@ -1244,6 +1446,14 @@ pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> 
         Method::Flatpak => {
             format!("Start it from your applications menu, or run flatpak run {FLATPAK_ID}.")
         }
+        // Quoted, since the folder has a space in it and this is for pasting into a terminal.
+        Method::CliWindows if places.leave_path => format!(
+            "Your PATH was left as it is, so run it as \"{}\".",
+            places
+                .cli_folder(true)
+                .map(|folder| folder.join("noctorium.exe").display().to_string())
+                .unwrap_or_else(|_| "noctorium.exe".into())
+        ),
         Method::CliWindows => {
             "Open a new terminal -- one already open still has the old PATH -- and run noctorium."
                 .into()
@@ -1278,7 +1488,7 @@ mod tests {
             home: Some(PathBuf::from("/home/sam")),
             data: Some(PathBuf::from("/home/sam/.local/share")),
             programs: Some(PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs")),
-            applications: None,
+            ..Places::default()
         }
     }
 
@@ -1287,8 +1497,8 @@ mod tests {
         Places {
             home: Some(PathBuf::from("/Users/sam")),
             data: Some(PathBuf::from("/Users/sam/.local/share")),
-            programs: None,
             applications: Some(PathBuf::from("/Applications")),
+            ..Places::default()
         }
     }
 
@@ -1301,14 +1511,176 @@ mod tests {
     }
 
     fn command(method: Method, file: &str, sudo: Option<&str>) -> (String, Vec<String>) {
-        only_command(actions_for(method, Path::new(file), sudo, &places()).unwrap())
+        only_command(actions_for(method, Path::new(file), sudo, &places(), false).unwrap())
     }
 
     #[test]
-    fn windows_runs_the_installer_itself() {
+    fn a_release_without_an_msi_runs_its_setup_itself() {
         let (program, args) = command(Method::WindowsSetup, r"C:\Temp\Noctorium-setup.exe", None);
         assert_eq!(program, r"C:\Temp\Noctorium-setup.exe");
         assert!(args.is_empty(), "the installer asks its own questions");
+    }
+
+    const MSI: &str =
+        r"C:\Users\Sam\AppData\Local\Temp\noctorium-installer\Noctorium-1.0.0-windows-x64.msi";
+
+    /// The same line Noctorium's own updater hands msiexec, word for word.
+    #[test]
+    fn a_first_install_hands_msiexec_the_msi_and_nothing_to_click() {
+        let actions =
+            actions_for(Method::WindowsMsi, Path::new(MSI), None, &places(), false).unwrap();
+        assert_eq!(
+            actions,
+            vec![Action::InstallMsi {
+                msi: PathBuf::from(MSI),
+                folder: None,
+                wizard: false,
+            }]
+        );
+        assert_eq!(
+            msiexec_arguments(Path::new(MSI), None, false),
+            format!(r#"/i "{MSI}" /passive /norestart MSIFASTINSTALL=7"#)
+        );
+        assert_eq!(
+            actions[0].describe(&places()),
+            format!(r#"msiexec /i "{MSI}" /passive /norestart MSIFASTINSTALL=7"#),
+            "the plan shows exactly what will run"
+        );
+    }
+
+    /// The .msi does not remember a folder chosen at the first install, and would move Noctorium back to
+    /// Program Files without being told.
+    #[test]
+    fn an_upgrade_is_told_the_folder_noctorium_is_already_in() {
+        let installed = Places {
+            installed: Some(PathBuf::from(r"D:\Apps\Noctorium\")),
+            ..places()
+        };
+        let actions =
+            actions_for(Method::WindowsMsi, Path::new(MSI), None, &installed, false).unwrap();
+        assert_eq!(
+            actions,
+            vec![Action::InstallMsi {
+                msi: PathBuf::from(MSI),
+                folder: Some(PathBuf::from(r"D:\Apps\Noctorium\")),
+                wizard: false,
+            }]
+        );
+        assert_eq!(
+            msiexec_arguments(
+                Path::new(MSI),
+                Some(Path::new(r"D:\Apps\Noctorium\")),
+                false
+            ),
+            format!(
+                r#"/i "{MSI}" /passive /norestart MSIFASTINSTALL=7 INSTALLDIR="D:\Apps\Noctorium""#
+            ),
+            "and without the backslash InstallLocation ends with, before the closing quote"
+        );
+    }
+
+    #[test]
+    fn the_wizard_is_the_same_line_without_passive_and_starts_on_the_same_folder() {
+        let installed = Places {
+            installed: Some(PathBuf::from(r"C:\Program Files\Noctorium")),
+            ..places()
+        };
+        let actions =
+            actions_for(Method::WindowsMsi, Path::new(MSI), None, &installed, true).unwrap();
+        assert_eq!(
+            actions[0].describe(&installed),
+            format!(
+                r#"msiexec /i "{MSI}" /norestart MSIFASTINSTALL=7 INSTALLDIR="C:\Program Files\Noctorium""#
+            )
+        );
+        // The wizard means nothing to anything but the .msi.
+        assert_eq!(
+            actions_for(Method::Apt, Path::new("/tmp/n.deb"), None, &places(), true).unwrap(),
+            actions_for(Method::Apt, Path::new("/tmp/n.deb"), None, &places(), false).unwrap()
+        );
+    }
+
+    /// Folders that people really have: spaces, an apostrophe, accents, a name in another script. A pair
+    /// of double quotes is all any of them needs, since no Windows path can contain one.
+    #[test]
+    fn folders_of_every_shape_are_quoted_whole() {
+        for (folder, written) in [
+            (r"C:\Program Files\Noctorium", r"C:\Program Files\Noctorium"),
+            (
+                r"C:\Users\Seán O'Brien\Apps\Noctorium\",
+                r"C:\Users\Seán O'Brien\Apps\Noctorium",
+            ),
+            (r"D:\Müzik Çalar\Noctorium", r"D:\Müzik Çalar\Noctorium"),
+            (r"E:\音楽\Noctorium", r"E:\音楽\Noctorium"),
+            (
+                r"C:\Rock 'n' Roll (x86) & more\Noctorium",
+                r"C:\Rock 'n' Roll (x86) & more\Noctorium",
+            ),
+            (r"\\server\share\Noctorium\", r"\\server\share\Noctorium"),
+            // A drive's root keeps its backslash: `C:` alone is wherever C: was last.
+            (r"F:\", r"F:\"),
+        ] {
+            let line = msiexec_arguments(
+                Path::new(r"C:\Users\Seán O'Brien\AppData\Local\Temp\noctorium-installer\N.msi"),
+                Some(Path::new(folder)),
+                false,
+            );
+            assert!(
+                line.starts_with(
+                    r#"/i "C:\Users\Seán O'Brien\AppData\Local\Temp\noctorium-installer\N.msi" /passive"#
+                ),
+                "{line}"
+            );
+            assert!(
+                line.ends_with(&format!(r#" INSTALLDIR="{written}""#)),
+                "{folder}: {line}"
+            );
+            assert_eq!(line.matches('"').count(), 4, "{line}");
+        }
+    }
+
+    /// What msiexec is handed is the line as it was written, with nothing quoted again around it. Asked of
+    /// cmd's echo, which says back the rest of its own command line as it got it, since msiexec itself
+    /// would install something.
+    #[cfg(windows)]
+    #[test]
+    fn the_line_reaches_the_program_as_it_was_written() {
+        let line = msiexec_arguments(
+            Path::new(r"C:\Users\Sam O'Neil\AppData\Local\Temp\noctorium-installer\N 1.msi"),
+            Some(Path::new(r"D:\Program Files (x86)\Noctorium\")),
+            false,
+        );
+        let cmd = std::env::var_os("ComSpec")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+        let output = verbatim(&cmd, &format!("/d /c echo {line}"))
+            .stdin(Stdio::null())
+            .output()
+            .expect("cmd runs");
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), line);
+        assert!(
+            line.ends_with(r#"INSTALLDIR="D:\Program Files (x86)\Noctorium""#),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn windows_installers_exit_codes_are_said_plainly() {
+        assert!(matches!(msiexec_outcome(Some(0)), Ok(None)));
+        assert!(
+            matches!(msiexec_outcome(Some(3010)), Ok(Some(note)) if note.contains("restarting"))
+        );
+        for (code, said) in [
+            (1602, "cancelled"),
+            (1618, "installing something else"),
+            (1603, "exit code 1603"),
+        ] {
+            match msiexec_outcome(Some(code)) {
+                Err(problem) => assert!(problem.to_string().contains(said), "{code}: {problem}"),
+                Ok(_) => panic!("{code} is not a success"),
+            }
+        }
+        assert!(msiexec_outcome(None).is_err());
     }
 
     #[test]
@@ -1378,6 +1750,7 @@ mod tests {
             Path::new("/tmp/Noctorium-1.0.0-x86_64.flatpak"),
             None,
             &places(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1421,6 +1794,7 @@ mod tests {
             Path::new("/tmp/Noctorium-1.0.0-x86_64.AppImage"),
             None,
             &places(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1443,6 +1817,7 @@ mod tests {
             Path::new("/tmp/noctorium-cli-1.0.0-linux-x64.tar.gz"),
             None,
             &places(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1451,6 +1826,7 @@ mod tests {
                 archive: PathBuf::from("/tmp/noctorium-cli-1.0.0-linux-x64.tar.gz"),
                 into: PathBuf::from("/home/sam/.local/share/noctorium-cli"),
                 link: Some(PathBuf::from("/home/sam/.local/bin/noctorium")),
+                path: false,
             }]
         );
 
@@ -1459,6 +1835,7 @@ mod tests {
             Path::new(r"C:\Temp\noctorium-cli-1.0.0-windows-x64.zip"),
             None,
             &places(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1467,7 +1844,43 @@ mod tests {
                 archive: PathBuf::from(r"C:\Temp\noctorium-cli-1.0.0-windows-x64.zip"),
                 into: PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs").join("Noctorium CLI"),
                 link: None,
+                path: true,
             }]
+        );
+    }
+
+    /// NOCTORIUM_NO_PATH: the CLI unpacked wherever LOCALAPPDATA says, and the account's PATH untouched,
+    /// which the plan says and the end of the install allows for.
+    #[test]
+    fn the_path_can_be_left_alone_for_a_trial_install() {
+        let trial = Places {
+            programs: Some(PathBuf::from(r"C:\Temp\sandbox\Programs")),
+            leave_path: true,
+            ..places()
+        };
+        let actions = actions_for(
+            Method::CliWindows,
+            Path::new(r"C:\Temp\noctorium-cli-1.0.0-windows-x64.zip"),
+            None,
+            &trial,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            actions,
+            vec![Action::UnpackCli {
+                archive: PathBuf::from(r"C:\Temp\noctorium-cli-1.0.0-windows-x64.zip"),
+                into: PathBuf::from(r"C:\Temp\sandbox\Programs").join("Noctorium CLI"),
+                link: None,
+                path: false,
+            }]
+        );
+        let said = actions[0].describe(&trial);
+        assert!(said.contains("leave your PATH as it is"), "{said}");
+        let start = how_to_start(Method::CliWindows, &trial, false);
+        assert!(
+            start.contains("noctorium.exe") && start.contains("PATH was left"),
+            "{start}"
         );
     }
 
@@ -1475,10 +1888,16 @@ mod tests {
     fn a_per_user_format_without_a_home_says_so() {
         let homeless = Places::default();
         assert!(matches!(
-            actions_for(Method::AppImage, Path::new("/tmp/x"), None, &homeless),
+            actions_for(
+                Method::AppImage,
+                Path::new("/tmp/x"),
+                None,
+                &homeless,
+                false
+            ),
             Err(Problem::Local(_))
         ));
-        assert!(actions_for(Method::Apt, Path::new("/tmp/x.deb"), None, &homeless).is_ok());
+        assert!(actions_for(Method::Apt, Path::new("/tmp/x.deb"), None, &homeless, false).is_ok());
     }
 
     #[test]
@@ -1487,6 +1906,7 @@ mod tests {
             assert!(method.needs_root(), "{method:?}");
         }
         for method in [
+            Method::WindowsMsi,
             Method::WindowsSetup,
             Method::MacDiskImage,
             Method::AppImage,
@@ -1506,6 +1926,7 @@ mod tests {
             Path::new("/tmp/Noctorium-1.0.0-macos-arm64.dmg"),
             None,
             &mac_places(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1529,6 +1950,7 @@ mod tests {
             Path::new("/tmp/x.dmg"),
             None,
             &standard,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1552,6 +1974,7 @@ mod tests {
             Path::new("/tmp/noctorium-cli-1.0.0-macos-arm64.tar.gz"),
             None,
             &mac_places(),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1560,6 +1983,7 @@ mod tests {
                 archive: PathBuf::from("/tmp/noctorium-cli-1.0.0-macos-arm64.tar.gz"),
                 into: PathBuf::from("/Users/sam/.local/share/noctorium-cli"),
                 link: Some(PathBuf::from("/Users/sam/.local/bin/noctorium")),
+                path: false,
             }]
         );
         assert_eq!(
@@ -1855,6 +2279,7 @@ mod tests {
     #[test]
     fn each_install_says_how_to_start_it() {
         let places = places();
+        assert!(how_to_start(Method::WindowsMsi, &places, true).contains("Start menu"));
         assert!(how_to_start(Method::Apt, &places, true).contains("/opt/noctorium/bin/Noctorium"));
         assert!(how_to_start(Method::Pacman, &places, true).contains("run noctorium"));
         assert!(how_to_start(Method::Flatpak, &places, true)

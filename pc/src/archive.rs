@@ -328,6 +328,51 @@ pub(crate) mod tests {
         assert!(!here.join("noctorium-cli.partial").exists());
     }
 
+    /// The Noctorium CLI's own updater swaps itself in beside the install folder, through folders named
+    /// after it with `.update-` and `.old-` and something after them, and may leave one behind. They are
+    /// its business: an install here goes on as usual, and leaves them exactly as they were.
+    #[test]
+    fn what_the_clis_own_updater_leaves_beside_it_is_left_alone() {
+        let here = scratch("updater");
+        let destination = here.join("Noctorium CLI");
+        let first = here.join("noctorium-cli-1.0.0-windows-x64.zip");
+        zip_file(&first, &[("noctorium-cli/noctorium.exe", "one")]);
+        install_folder(&first, &destination).expect("first install");
+
+        let theirs = [
+            here.join("Noctorium CLI.update-1a2b3c"),
+            here.join("Noctorium CLI.old-1a2b3c"),
+        ];
+        for folder in &theirs {
+            fs::create_dir_all(folder).unwrap();
+            fs::write(folder.join("noctorium.exe"), "theirs").unwrap();
+        }
+        let second = here.join("noctorium-cli-1.1.0-windows-x64.zip");
+        zip_file(&second, &[("noctorium-cli/noctorium.exe", "two")]);
+        install_folder(&second, &destination).expect("upgrade");
+
+        assert_eq!(
+            fs::read_to_string(destination.join("noctorium.exe")).unwrap(),
+            "two"
+        );
+        for folder in &theirs {
+            assert_eq!(
+                fs::read_to_string(folder.join("noctorium.exe")).unwrap(),
+                "theirs",
+                "{}",
+                folder.display()
+            );
+        }
+        // Even when the updater was stopped half way, with the install folder moved aside and nothing put
+        // back yet: this is a first install, as far as this can tell.
+        fs::rename(&destination, here.join("Noctorium CLI.old-4d5e6f")).unwrap();
+        install_folder(&second, &destination).expect("installs where there is nothing");
+        assert!(destination.join("noctorium.exe").is_file());
+        assert!(here
+            .join("Noctorium CLI.old-4d5e6f/noctorium.exe")
+            .is_file());
+    }
+
     #[test]
     fn a_zip_becomes_the_folder_and_its_launcher_is_found_at_the_top() {
         let here = scratch("zip");

@@ -64,9 +64,22 @@ release whenever they change.
 | `noctorium-installer-cli-macos` | A terminal on a Mac, Apple silicon or Intel: one universal file | `pc/` |
 | `Noctorium-Installer-android.apk` | Android | `phone/`, in Dart with Flutter |
 
-None of them installs a package itself. The PC ones run the Windows installer, or hand the package to the
+None of them installs a package itself. The PC ones hand Windows its `.msi`, or the package to the
 distribution's own package manager — `apt`, `dnf`, `zypper` or `pacman` — so dependencies are resolved
-rather than merely reported. What has no package manager, they put in place themselves, for the person
+rather than merely reported. On Windows that is the line Noctorium's own updater uses:
+
+```
+msiexec /i <msi> /passive /norestart MSIFASTINSTALL=7 INSTALLDIR=<folder>
+```
+
+a progress bar and nothing to click once Windows has asked for permission, and `INSTALLDIR` only when
+Noctorium is installed already — read from its entry in Apps & features — because the `.msi` does not
+remember a folder chosen at the first install and would otherwise move it back to Program Files. The
+`-setup.exe` is the same `.msi` wrapped up, which it writes out to the temporary folder again before
+anything happens: on the machine this was measured on, 21.5 seconds from starting it to its first page,
+against 7.5 for the `.msi`. It is only run for a release that has no `.msi`. Whoever wants to choose the
+folder still can: `--wizard` in the terminal, or the box under the button in the window, opens the
+`.msi`'s own pages instead. What has no package manager, they put in place themselves, for the person
 running them and nobody else: an AppImage in `~/Applications` with a menu entry, a Flatpak bundle handed
 to `flatpak install --user`, the Noctorium CLI unpacked into a folder of its own. On a Mac, Noctorium.app
 is copied out of its disk image into `/Applications`, as dragging it there would. The phone one hands the
@@ -82,8 +95,18 @@ needs it to see a release; it only raises the rate limit an address shares with 
 
 The window ones show what they found, wait to be told to go ahead, and draw a progress bar; it is the
 first thing anybody sees of Noctorium, usually before they have any reason to trust it, and a console full
-of scrolling text is not what somebody who has just downloaded a music player expects. On Linux the window
-has one more row, for the format, which starts on whatever this machine would pick. The window program
+of scrolling text is not what somebody who has just downloaded a music player expects. They offer
+Noctorium, the Noctorium CLI, or both — a box for each, Noctorium ticked to begin with, each saying how
+much it is to download — and then a bar for each, and at the end how to start each one. On Linux the
+window has one more row, for the format, which starts on whatever this machine would pick.
+
+Both products download at once, a big file over four connections — on the line this was measured on,
+GitHub's CDN gave each connection about 2 MB/s, and both products came down in 40 seconds rather than
+190 — and each is installed as soon as its own download is checked: the Noctorium CLI, a fifth of the
+size, is in while Noctorium is still coming down. A download is kept, under `noctorium-installer` in the temporary folder, until it has been
+installed. A run that is stopped part of the way carries on from where it got to, with Range requests,
+and one whose install was cancelled finds the file whole and uses it, once it has checked it against
+`SHA256SUMS.txt` again; nothing half downloaded ever has the file's own name. The window program
 still installs in the terminal behind `--cli`, taking every default without asking, and does so by itself
 on a machine with no display — over ssh, say, where `DISPLAY` and `WAYLAND_DISPLAY` are both unset. There
 is no window one for a Mac: the one-line script and the terminal installer are how a Mac installs.
@@ -104,9 +127,9 @@ installing Noctorium on a row of machines.
   Release   v0.7.0 (the latest)
 
   What would you like to install?
-    1  Noctorium      the music player, in a window  recommended
-    2  Noctorium CLI  the same player, in a terminal
-    3  Both
+    1  Noctorium      the music player, in a window, 242.7 MB  recommended
+    2  Noctorium CLI  the same player, in a terminal, 63.4 MB
+    3  Both           306.1 MB, downloaded at once
   Choose 1-3 [1]
 ```
 
@@ -115,7 +138,9 @@ installing Noctorium on a row of machines.
 | `-y`, `--yes` | Ask nothing: take the defaults and install. |
 | `--product desktop\|cli\|both` | Noctorium (the default), the Noctorium CLI, or both. |
 | `--format auto\|deb\|rpm\|arch\|appimage\|flatpak` | Linux only. `auto` is the distribution's own package where there is one, and the AppImage everywhere else. |
+| `--wizard` | Windows only. Open the `.msi`'s own pages, to choose the folder, rather than installing with a progress bar and nothing to click. |
 | `--version X.Y.Z` | Install release `vX.Y.Z` rather than the latest. |
+| `--download-only` | Download and check the files and install nothing. They are kept, and the next run installs them without downloading them again. |
 | `--dry-run` | Show what would be downloaded and run, and stop there. |
 | `--list` | List the release's files and their sizes, marking the ones for this machine. |
 | `--no-color` | Plain text. `NO_COLOR` does the same, and output that is not a terminal is never coloured. |
@@ -132,6 +157,8 @@ noctorium-installer-cli                                  # ask, then install
 noctorium-installer-cli --yes                            # Noctorium, the way this machine prefers
 noctorium-installer-cli --product both --yes             # and the Noctorium CLI beside it
 noctorium-installer-cli --format appimage                # the AppImage, whatever the distribution
+noctorium-installer-cli --wizard                         # Windows: choose the folder in the setup's pages
+noctorium-installer-cli --product both --download-only -y    # fetch both now, install them later
 noctorium-installer-cli --version 0.6.0 --dry-run        # what installing 0.6.0 would do
 curl -fsSLo noctorium-installer-cli https://github.com/Noctorium/Noctorium-Installer/releases/latest/download/noctorium-installer-cli-linux-x64 \
   && chmod +x noctorium-installer-cli && ./noctorium-installer-cli
@@ -161,6 +188,10 @@ afterwards; one already open keeps the old PATH), and on Linux and on a Mac into
 `~/.zprofile`, under `# Added by the Noctorium installer`, once; open a new terminal afterwards. A newer
 one replaces an older one whole. A release that does not carry it yet says so, and installs nothing.
 
+To try the install somewhere it can do no harm, point `LOCALAPPDATA` (Windows) or `HOME` at a folder of
+your own and set `NOCTORIUM_NO_PATH=1`: the CLI is unpacked in there, and your PATH — or a Mac's
+`~/.zprofile` — is left exactly as it was, which the plan says before anything happens.
+
 ### Building them
 
 ```bash
@@ -181,6 +212,12 @@ lipo -create -output noctorium-installer-cli-macos \
 The window toolkit is left out of a Mac build altogether, so `cargo build` and `cargo test` work there
 too; the window program it makes is the terminal installer under another name, and is not published.
 
+The window can be looked at without opening one: `cargo test --bin noctorium-installer -- --ignored
+the_window_drawn` lays out every stage of it and paints them into PNGs, in the folder
+`NOCTORIUM_RENDER_TO` names or in `noctorium-installer-render` in the temporary folder. And
+`cargo run --release --example bench` times what the release profile makes fast or slow — hashing,
+unpacking, and downloading over one connection or several — as `examples/bench.rs` says.
+
 Building the window one on Linux needs the headers it is drawn with, which a desktop usually has already,
 and the static terminal one needs musl's compiler wrapper and the target:
 
@@ -193,7 +230,7 @@ sudo apt-get install musl-tools && rustup target add x86_64-unknown-linux-musl
 
 | Platform | File |
 | --- | --- |
-| Windows | `Noctorium-<version>-windows-x64-setup.exe`, or the `.msi` for deployment |
+| Windows | `Noctorium-<version>-windows-x64.msi`, which the installers and the in-app updater take, or the `-setup.exe` to double click |
 | Mac with Apple silicon | `Noctorium-<version>-macos-arm64.dmg` |
 | Mac with Intel | `Noctorium-<version>-macos-x64.dmg` |
 | Debian, Ubuntu, Mint | `noctorium_<version>_amd64.deb` |
