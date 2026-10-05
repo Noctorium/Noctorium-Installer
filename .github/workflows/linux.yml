@@ -50,7 +50,7 @@ jobs:
         # xdg-utils and desktop-file-utils are for the package's own post-install hook, not for building:
         # jpackage writes one that registers the .desktop entry, and on a runner without them dpkg fails
         # the install with exit status 3 while the package itself is perfectly good.
-        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm xdg-utils desktop-file-utils shared-mime-info
+        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm cpio xdg-utils desktop-file-utils shared-mime-info
 
       # createDistributable is the application folder on its own, which the packages are built from but
       # do not leave behind: it is what the Arch package, the AppImage and the Flatpak are made of.
@@ -83,9 +83,16 @@ jobs:
           sudo mkdir -p /usr/share/applications /usr/share/desktop-directories
           sudo dpkg --install out/*.deb
           test -x /opt/noctorium/bin/Noctorium || { echo "the deb did not put the binary where it said"; exit 1; }
+          # The menu entry names the launcher by its path, never by a name looked up on PATH: the Noctorium CLI
+          # is noctorium, in ~/.local/bin, ahead of everything a package installs, and an entry that ran
+          # noctorium would open the CLI with no terminal -- nothing on screen at all.
+          entry=$(dpkg -L noctorium | grep '\.desktop$' | head -1)
+          grep -Eq '^Exec="?/opt/noctorium/bin/Noctorium"?( |$)' "$entry" || { echo "the deb's menu entry does not name the launcher by its path:"; cat "$entry"; exit 1; }
           sudo dpkg --remove noctorium
           rpm --query --package --info out/*.rpm
           rpm --query --package --list out/*.rpm | grep -q 'bin/Noctorium'
+          rpm2cpio out/*.rpm | cpio -i --quiet --to-stdout '*.desktop' > rpm-entry.desktop
+          grep -Eq '^Exec="?/opt/noctorium/bin/Noctorium"?( |$)' rpm-entry.desktop || { echo "the rpm's menu entry does not name the launcher by its path:"; cat rpm-entry.desktop; exit 1; }
 
       # Tarred rather than uploaded as a folder: an artifact keeps neither the launcher's executable bit
       # nor the runtime's symbolic links, and the folder is useless without both. Already compressed, so
@@ -156,7 +163,9 @@ jobs:
           package=$(ls out/*.pkg.tar.zst)
           pacman -Qip "$package"
           pacman -Qlp "$package" | grep -q 'opt/noctorium/bin/Noctorium'
-          pacman -Qlp "$package" | grep -q 'usr/bin/noctorium'
+          # The window app's command is noctorium-desktop: noctorium is the Noctorium CLI's, everywhere.
+          pacman -Qlp "$package" | grep -q 'usr/bin/noctorium-desktop$'
+          if pacman -Qlp "$package" | grep -q 'usr/bin/noctorium$'; then echo "the package takes the CLI's name, noctorium"; exit 1; fi
 
       # Installed for real, which is what proves every name in depends exists, and then every library in
       # it is asked what it links against. Chromium for the sign-in window arrives packed inside a jar, so
@@ -167,7 +176,9 @@ jobs:
           pacman -Syu --noconfirm
           pacman -U --noconfirm out/*.pkg.tar.zst
           test -x /opt/noctorium/bin/Noctorium
-          test "$(readlink /usr/bin/noctorium)" = /opt/noctorium/bin/Noctorium
+          test "$(readlink /usr/bin/noctorium-desktop)" = /opt/noctorium/bin/Noctorium
+          test ! -e /usr/bin/noctorium
+          grep -qx 'Exec=/opt/noctorium/bin/Noctorium' /usr/share/applications/noctorium.desktop
           pacman -S --noconfirm --needed desktop-file-utils
           desktop-file-validate /usr/share/applications/noctorium.desktop
 

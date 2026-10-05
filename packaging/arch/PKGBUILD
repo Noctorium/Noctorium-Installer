@@ -74,7 +74,7 @@ source=(
 # the release's SHA256SUMS.txt is what vouches for the package made from it.
 sha256sums=(
   'SKIP'
-  '372851af5690f369a9a96b022dd4cfa49fd3a6ba716a886729c2dc43f62e5699'
+  '13cd5a595936afa534a90cc6b7fb8b219ae0bba4a15f5e976a07ac09ab8dd8f2'
 )
 
 package() {
@@ -82,8 +82,13 @@ package() {
   cp -a "$srcdir/Noctorium" "$pkgdir/opt/noctorium"
 
   # The jpackage launcher finds its jars and runtime from its own real path, so a link to it works.
+  #
+  # noctorium-desktop and not noctorium, which is the Noctorium CLI's name on every system -- and a CLI
+  # installed for one person lives in ~/.local/bin, which comes before /usr/bin. When this was called
+  # noctorium, and the menu entry ran it by that name, installing the CLI made the menu open the CLI, with
+  # no terminal, so that nothing appeared at all. The menu entry now names the launcher by its path.
   install -d "$pkgdir/usr/bin"
-  ln -s /opt/noctorium/bin/Noctorium "$pkgdir/usr/bin/noctorium"
+  ln -s /opt/noctorium/bin/Noctorium "$pkgdir/usr/bin/noctorium-desktop"
 
   install -Dm644 "$srcdir/noctorium.desktop" "$pkgdir/usr/share/applications/noctorium.desktop"
   install -Dm644 "$srcdir/Noctorium/lib/Noctorium.png" \
