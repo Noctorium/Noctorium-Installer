@@ -2,7 +2,8 @@ name: Release
 
 # Builds the things people install -- a Windows installer, an Android APK, for Linux a .deb, an .rpm,
 # an Arch package, an AppImage and a Flatpak, and for the Mac a disk image for Apple silicon and one for
-# Intel -- from the application repositories, and publishes them here. This repository is where releases live and what the in-app updater watches; it holds no
+# Intel, and beside them the Noctorium CLI and Noctorium Stats -- from the application repositories, and
+# publishes them here. This repository is where releases live and what the in-app updater watches; it holds no
 # application code of its own, only the installers and the packaging in packaging/.
 #
 # jpackage cannot cross-build. It reads the JDK it is running on and produces a package for that machine
@@ -41,6 +42,14 @@ on:
         description: 'Noctorium-cli branch, tag or commit to build'
         required: false
         default: 'main'
+      stats_desktop_ref:
+        description: 'Noctorium-Stats-Desktop branch, tag or commit to build'
+        required: false
+        default: 'main'
+      stats_mobile_ref:
+        description: 'Noctorium-Stats-Mobile branch, tag or commit to build'
+        required: false
+        default: 'main'
 
 permissions:
   contents: write
@@ -50,10 +59,12 @@ env:
   # A manual run has to say what it is building instead.
   APP_VERSION: ${{ inputs.version || github.ref_name }}
   # A tag push builds the same tag in the application repositories, so a release is reproducible from
-  # three tags that agree. A manual run builds whatever branch or commit it was given.
+  # tags that agree. A manual run builds whatever branch or commit it was given.
   DESKTOP_REF: ${{ inputs.desktop_ref || github.ref_name }}
   MOBILE_REF: ${{ inputs.mobile_ref || github.ref_name }}
   CLI_REF: ${{ inputs.cli_ref || github.ref_name }}
+  STATS_DESKTOP_REF: ${{ inputs.stats_desktop_ref || github.ref_name }}
+  STATS_MOBILE_REF: ${{ inputs.stats_mobile_ref || github.ref_name }}
 
 jobs:
   # Nothing is packaged until the tests pass. Twenty minutes of packaging on a commit that does not work
@@ -300,11 +311,27 @@ jobs:
           name: cli-${{ matrix.os }}
           path: build/dist/*
 
+  # Noctorium Stats, from Noctorium-Stats-Desktop and Noctorium-Stats-Mobile at the same tag: an archive
+  # for each of Windows, Linux and both kinds of Mac, and an APK signed with the same key as Noctorium's.
+  # Each runs its own repository's tests before it packages anything, so it does not wait for the
+  # desktop's. See stats.yml. The refs are spelled out here rather than read from env, which a call to
+  # another workflow cannot see.
+  stats:
+    name: Noctorium Stats
+    uses: ./.github/workflows/stats.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+      desktop_ref: ${{ inputs.stats_desktop_ref || github.ref_name }}
+      mobile_ref: ${{ inputs.stats_mobile_ref || github.ref_name }}
+    # The Android signing key, which a called workflow is not given unless it is passed on.
+    secrets: inherit
+
   release:
     name: Publish the release
     # linux is linux.yml: the .deb, the .rpm, the Arch package, the AppImage and the Flatpak, every one of
-    # which has to succeed. pc-installer is both systems' window and terminal installers.
-    needs: [windows, linux, macos, android, cli, pc-installer, phone-installer]
+    # which has to succeed. pc-installer is both systems' window and terminal installers, and stats is all
+    # five files of Noctorium Stats.
+    needs: [windows, linux, macos, android, cli, pc-installer, phone-installer, stats]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -327,6 +354,22 @@ jobs:
             find "$artifact" -type f -exec cp {} release/ \;
           done
           ls -la release
+          # Twenty-six files, and SHA256SUMS.txt makes twenty-seven: Noctorium's two for Windows, five
+          # for Linux, two disk images and an APK; the Noctorium CLI's four; the installers' seven; and
+          # Noctorium Stats' five. Counted, because a job that uploaded nothing under a name nobody
+          # expected would otherwise make a release that is quietly short of something.
+          count=$(find release -type f | wc -l)
+          if [ "$count" -ne 26 ]; then
+            echo "::error::Expected 26 files before the checksums, and there are $count."
+            exit 1
+          fi
+          # And Noctorium Stats' by name, since the installers find them by name.
+          version="${GITHUB_REF_NAME#v}"
+          for name in "noctorium-stats-$version-windows-x64.zip" "noctorium-stats-$version-linux-x64.tar.gz" \
+              "noctorium-stats-$version-macos-arm64.zip" "noctorium-stats-$version-macos-x64.zip" \
+              "Noctorium-Stats-$version.apk"; do
+            test -f "release/$name" || { echo "::error::No $name in the release."; exit 1; }
+          done
           # Generated from inside the folder rather than stripping the path off afterwards. The sed that
           # used to do that left three spaces where coreutils writes two, which the application's own
           # parser did not care about and `sha256sum --check` refused outright -- so anybody verifying the
@@ -344,7 +387,7 @@ jobs:
           draft: true
           generate_release_notes: false
           body: |
-            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`, Noctorium-cli at `${{ env.CLI_REF }}`.
+            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`, Noctorium-cli at `${{ env.CLI_REF }}`, Noctorium-Stats-Desktop at `${{ env.STATS_DESKTOP_REF }}`, Noctorium-Stats-Mobile at `${{ env.STATS_MOBILE_REF }}`.
 
             | Platform | File |
             | --- | --- |
@@ -356,8 +399,9 @@ jobs:
             | Any Linux with Flatpak | `Noctorium-*-x86_64.flatpak`: `flatpak install --user --bundle` |
             | macOS, Apple silicon | `Noctorium-*-macos-arm64.dmg`: open it and drag Noctorium into Applications |
             | macOS, Intel | `Noctorium-*-macos-x64.dmg` |
-            | Android | `Noctorium-*.apk` |
+            | Android | `Noctorium-*.apk` -- not `Noctorium-Stats-*.apk`, which is Noctorium Stats |
             | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, `noctorium-cli-*-macos-arm64.tar.gz`, `noctorium-cli-*-macos-x64.tar.gz` |
+            | Noctorium Stats: your listening, in figures, from your Noctorium account | `noctorium-stats-*-windows-x64.zip`, `noctorium-stats-*-linux-x64.tar.gz`, `noctorium-stats-*-macos-arm64.zip`, `noctorium-stats-*-macos-x64.zip`, and for Android `Noctorium-Stats-*.apk` |
 
             Or take an installer instead, which fetches whichever release is latest at the time and
             checks it before it runs it:
@@ -369,7 +413,8 @@ jobs:
             | macOS | the disk image is the installer | `noctorium-installer-cli-macos`, for Apple silicon and Intel |
             | Android | `Noctorium-Installer-android.apk` | |
 
-            The terminal installer asks which product and which format, or takes `--yes` and the
+            The installers offer Noctorium, the Noctorium CLI and Noctorium Stats, any or all of them. The
+            terminal installer asks which and which format, or takes `--product`, `--yes` and the
             defaults; `--help` says the rest.
 
             The desktop packages carry their own Java runtime and their own copy of Chromium for the

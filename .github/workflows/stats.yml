@@ -1,0 +1,321 @@
+name: Noctorium Stats
+
+# Noctorium Stats, which signs in to the listener's Noctorium account and shows what they have listened to:
+# the desktop program from Noctorium-Stats-Desktop, built for Windows, Linux and both kinds of Mac, and the
+# phone's from Noctorium-Stats-Mobile. Five files, exactly:
+#
+#   noctorium-stats-<version>-windows-x64.zip       Noctorium Stats.exe
+#   noctorium-stats-<version>-linux-x64.tar.gz      noctorium-stats, noctorium-stats.desktop, noctorium-stats.png
+#   noctorium-stats-<version>-macos-arm64.zip       Noctorium Stats.app
+#   noctorium-stats-<version>-macos-x64.zip         Noctorium Stats.app
+#   Noctorium-Stats-<version>.apk                   signed with the same key as Noctorium's APK
+#
+# The installers in pc/ and phone/ find them by those names, so each job checks its file is named and
+# shaped as they expect before it is handed on. Called by release.yml for a release and by packaging.yml to
+# try it without one.
+#
+# How each repository is built and packaged is its own README's to say. The steps that do it here are
+# marked "As the README says", and kept to one step each, so that the day a README and this file disagree
+# there is one step to change and the checks around it stay as they are.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'The version to call it, with or without the leading v'
+        required: true
+        type: string
+      desktop_ref:
+        description: 'Noctorium-Stats-Desktop branch, tag or commit to build'
+        required: false
+        type: string
+        default: 'main'
+      mobile_ref:
+        description: 'Noctorium-Stats-Mobile branch, tag or commit to build'
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Noctorium Stats for ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+            archive: windows-x64.zip
+          - platform: linux
+            runner: ubuntu-latest
+            archive: linux-x64.tar.gz
+          # Built natively on each kind of Mac, as Noctorium is: macos-15-intel is GitHub's last Intel
+          # image.
+          - platform: macos-arm64
+            runner: macos-15
+            archive: macos-arm64.zip
+          - platform: macos-x64
+            runner: macos-15-intel
+            archive: macos-x64.zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      PLATFORM: ${{ matrix.platform }}
+      ARCHIVE: ${{ matrix.archive }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Stats-Desktop
+          ref: ${{ inputs.desktop_ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The window is drawn with OpenGL through X11 or Wayland, as the installer's is, and those headers are
+      # not on the runner; the keyring talks to the Secret Service over zbus, which needs nothing more.
+      # desktop-file-utils is for checking the menu entry below.
+      - name: Libraries the window is built against
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev desktop-file-utils
+
+      - name: Tests
+        run: cargo test
+
+      # ---- As Noctorium-Stats-Desktop's README says: the version from the tag in NOCTORIUM_VERSION, read
+      # at build time, then its packaging script for this platform, which leaves the one file in dist/.
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          NOCTORIUM_VERSION="$version" cargo build --release
+          bash packaging/package.sh "$version" "$PLATFORM"
+          ls -la dist
+      # ---- End of what the README decides.
+
+      # The name the installers look for, and inside it what they unpack: the program at the top or in one
+      # folder there, and on Linux its menu entry and icon beside it. Read with Python, which every runner
+      # has, rather than unzip, which a Windows one does not.
+      - name: Named and shaped as the installers expect
+        run: |
+          set -euo pipefail
+          file="dist/noctorium-stats-${VERSION#v}-$ARCHIVE"
+          if [ ! -f "$file" ]; then
+            echo "::error::packaging/package.sh left no $file. It left:"
+            ls -la dist
+            exit 1
+          fi
+          # python on Windows, where python3 may be no more than the Store's stand-in for it.
+          if [ "$RUNNER_OS" = Windows ]; then python=python; else python=python3; fi
+          "$python" - "$file" "$PLATFORM" <<'PY'
+          import sys, tarfile, zipfile
+          path, platform = sys.argv[1], sys.argv[2]
+          if path.endswith(".zip"):
+              names = zipfile.ZipFile(path).namelist()
+          else:
+              names = tarfile.open(path).getnames()
+          names = [n.rstrip("/") for n in names if not n.startswith("__MACOSX")]
+          print("\n".join(names[:40]))
+          # One folder at the top is unpacked as the folder itself, so what matters is what is under it.
+          tops = {n.split("/")[0] for n in names}
+          inner = set(names)
+          if len(tops) == 1:
+              top = next(iter(tops)) + "/"
+              under = {n[len(top):] for n in names if n.startswith(top)}
+              if under:
+                  inner = under
+          wanted = {
+              "windows": ["Noctorium Stats.exe"],
+              "linux": ["noctorium-stats", "noctorium-stats.desktop", "noctorium-stats.png"],
+          }.get(platform, ["Noctorium Stats.app/Contents/Info.plist"])
+          missing = [w for w in wanted if w not in inner and w not in names]
+          if missing:
+              sys.exit(f"{path} has no {', '.join(missing)} where the installers look for it")
+          print(f"{path}: has {', '.join(wanted)}")
+          PY
+
+      # Windows: a window program, not a console one -- started from the Start menu, a console program
+      # brings a black window up beside its own. Its icon and version are said, for the record.
+      - name: A window program
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zip = "dist/noctorium-stats-$($env:VERSION -replace '^v','')-$env:ARCHIVE"
+          $out = Join-Path $env:RUNNER_TEMP 'stats-windows'
+          Expand-Archive -LiteralPath $zip -DestinationPath $out -Force
+          $exe = Get-ChildItem -LiteralPath $out -Recurse -Filter 'Noctorium Stats.exe' | Select-Object -First 1
+          $bytes = [IO.File]::ReadAllBytes($exe.FullName)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          # The subsystem, 68 bytes into the optional header: 2 is a window program, 3 a console one.
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          Write-Host "Subsystem $subsystem"
+          if ($subsystem -ne 2) { throw "Noctorium Stats.exe is not a window program (subsystem $subsystem)" }
+          Add-Type -AssemblyName System.Drawing
+          $icon = [Drawing.Icon]::ExtractAssociatedIcon($exe.FullName)
+          Write-Host "Icon $($icon.Width)x$($icon.Height)"
+          Write-Host "Version $((Get-Item $exe.FullName).VersionInfo.ProductVersion)"
+
+      - name: A Linux program, and a menu entry that reads
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/stats-linux"
+          mkdir -p "$dir"
+          tar -xzf "dist/noctorium-stats-${VERSION#v}-$ARCHIVE" -C "$dir"
+          program=$(find "$dir" -name noctorium-stats -type f | head -1)
+          file "$program"
+          file "$program" | grep -q 'ELF 64-bit.*x86-64'
+          test -x "$program"
+          desktop-file-validate "$(find "$dir" -name noctorium-stats.desktop | head -1)"
+          # For the record: what it needs of the distribution.
+          ldd "$program" || true
+
+      # A Mac: opened the way the installer opens it, with ditto, and asked what it is. The architecture has
+      # to be this Mac's; the version and the signature are said, and warned about rather than refused, as
+      # the packaging script is the README's to decide.
+      - name: A Mac application, for this kind of Mac
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/stats-mac"
+          mkdir -p "$dir"
+          ditto -x -k "dist/noctorium-stats-${VERSION#v}-$ARCHIVE" "$dir"
+          app="$dir/Noctorium Stats.app"
+          test -d "$app"
+          program="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          archs=$(lipo -archs "$program")
+          echo "$program: $archs"
+          case "$PLATFORM" in
+            macos-arm64) echo "$archs" | grep -qw arm64 ;;
+            macos-x64) echo "$archs" | grep -qw x86_64 ;;
+          esac
+          shown=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" || true)
+          echo "Finder shows version $shown"
+          if [ "$shown" != "${VERSION#v}" ]; then
+            echo "::warning::Noctorium Stats.app says it is version '$shown', not ${VERSION#v}."
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app" || echo "::warning::Noctorium Stats.app's signature does not verify."
+
+      - name: The file, for the release
+        run: |
+          mkdir -p out
+          cp "dist/noctorium-stats-${VERSION#v}-$ARCHIVE" out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stats-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+
+  android:
+    name: Noctorium Stats for Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Stats-Mobile
+          ref: ${{ inputs.mobile_ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # As the Android job in release.yml does it, with the same secrets: one keystore, so Noctorium and
+      # Noctorium Stats carry one certificate. Written to a file rather than passed as a value, and absent
+      # secrets fall back to the debug key with a warning rather than failing.
+      - name: Restore the signing key, if there is one
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/noctorium.jks"
+            echo "path=$RUNNER_TEMP/noctorium.jks" >> "$GITHUB_OUTPUT"
+            echo "Signing with the release key."
+          else
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret. Noctorium Stats' APK will be signed with the debug key: installable for testing, but it cannot be updated later by a properly signed build."
+          fi
+
+      # versionCode as Noctorium's is packed: major * 10000 + minor * 100 + patch, from the numbers before
+      # any hyphen, so v1.2.3-beta.1 is 10203 and its versionName is 1.2.3-beta.1.
+      - name: The version, as Android takes it
+        id: version
+        run: |
+          set -euo pipefail
+          name="${VERSION#v}"
+          numbers="${name%%-*}"
+          IFS=. read -r major minor patch _ <<< "$numbers.0.0"
+          code=$(( ${major:-0} * 10000 + ${minor:-0} * 100 + ${patch:-0} ))
+          echo "versionName $name, versionCode $code"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - run: flutter pub get
+      - run: flutter test
+
+      # ---- As Noctorium-Stats-Mobile's README says: a release APK, its version given on the command line,
+      # signed from the same four variables Noctorium-Mobile's build reads.
+      - name: Build the release APK
+        env:
+          NOCTORIUM_KEYSTORE: ${{ steps.signing.outputs.path }}
+          NOCTORIUM_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          NOCTORIUM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          NOCTORIUM_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ steps.version.outputs.code }}
+        run: flutter build apk --release --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER"
+      # ---- End of what the README decides.
+
+      # Signed, which an APK has to be for anybody to install it; signed with the release key, when there
+      # is one, which is what lets the next release update it; and the application and version it should
+      # be. A failure here is a release that does not go out, which is better than one that does.
+      - name: Signed with Noctorium's key, and what it says it is
+        env:
+          KEYSTORE: ${{ steps.signing.outputs.path }}
+          NOCTORIUM_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          NOCTORIUM_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ steps.version.outputs.code }}
+        run: |
+          set -euo pipefail
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          ls -la "$apk"
+          # One version of the build tools, chosen, as the Android job explains.
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$tools/apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+          if [ -n "$KEYSTORE" ]; then
+            signed=$(grep -m1 'certificate SHA-256 digest' "$RUNNER_TEMP/certs.txt" | sed 's/.*: *//' | tr -d ':' | tr 'A-F' 'a-f')
+            key=$(keytool -list -v -keystore "$KEYSTORE" -storepass:env NOCTORIUM_KEYSTORE_PASSWORD -alias "$NOCTORIUM_KEY_ALIAS" \
+              | grep -m1 'SHA256:' | sed 's/.*SHA256: *//' | tr -d ':' | tr 'A-F' 'a-f')
+            if [ "$signed" != "$key" ]; then
+              echo "::error::Noctorium Stats' APK is signed with $signed, not the release key, $key."
+              exit 1
+            fi
+            echo "Signed with the release key."
+          fi
+          "$tools/aapt2" dump badging "$apk" | head -1 | tee "$RUNNER_TEMP/badging.txt"
+          grep -q "package: name='app.noctorium.stats'" "$RUNNER_TEMP/badging.txt"
+          grep -q "versionCode='$BUILD_NUMBER'" "$RUNNER_TEMP/badging.txt"
+          grep -q "versionName='$BUILD_NAME'" "$RUNNER_TEMP/badging.txt"
+
+      - name: Name the file after the version
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp build/app/outputs/flutter-apk/app-release.apk "out/Noctorium-Stats-${VERSION#v}.apk"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stats-android
+          path: out/*
+          if-no-files-found: error

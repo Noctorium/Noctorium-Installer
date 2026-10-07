@@ -281,6 +281,11 @@ jobs:
             grep 'System' list-rosetta.txt
             grep -q 'Apple silicon' list-rosetta.txt
           fi
+          # Everything it installs on a Mac: Noctorium, the CLI, and Noctorium Stats.app -- or, against a
+          # release from before Stats, the first two and a word about the third. Never a failure.
+          "$cli" --dry-run --yes --product all --no-color > all.txt
+          cat all.txt
+          grep -q 'Noctorium Stats' all.txt
       - uses: actions/upload-artifact@v4
         with:
           name: pc-installer-macos

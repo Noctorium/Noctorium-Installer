@@ -83,6 +83,11 @@ jobs:
           # Both products, which is the .msi and the msiexec line it is installed with on Windows, and the
           # distribution's package and ~/.local/bin on Linux.
           "$cli" --dry-run --yes --product both
+          # And all three. Against a release from before Noctorium Stats it is left out, said so, and the
+          # rest planned as before, which is what this asserts until a release carries it: never a failure.
+          "$cli" --dry-run --yes --product all --no-color > all.txt
+          cat all.txt
+          if ! grep -q 'Noctorium Stats' all.txt; then echo 'Noctorium Stats was neither planned nor said to be missing'; exit 1; fi
           # Usage errors are 2, not 1, so a script can tell a typo from a failed install.
           status=0; "$cli" --not-an-option 2> /dev/null || status=$?
           test "$status" = 2

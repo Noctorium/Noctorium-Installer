@@ -1,11 +1,14 @@
 name: Packaging
 
-# Every Linux format, everything for the Mac and every PC installer, built as a release would build them,
-# and attached to the run rather than to a release. This is how the packaging is tried: push a branch named
-# packaging/something, or run it by hand from the Actions tab against any branch or commit of the desktop.
+# Every Linux format, everything for the Mac, every PC installer and all of Noctorium Stats, built as a
+# release would build them, and attached to the run rather than to a release. This is how the packaging is
+# tried: push a branch named packaging/something, or run it by hand from the Actions tab against any branch
+# or commit of the desktop.
 #
-# The tests, the Windows installer and the APK are left out. They are release.yml's, unchanged by any of
-# this, and twenty minutes of Windows packaging is not what anybody trying an Arch package is waiting for.
+# The tests, the Windows installer and Noctorium's APK are left out. They are release.yml's, unchanged by
+# any of this, and twenty minutes of Windows packaging is not what anybody trying an Arch package is
+# waiting for. Noctorium Stats is in, APK and all, because it is new and its packaging is the part most
+# likely to want trying; it builds from its repositories' main branches unless told otherwise.
 on:
   push:
     branches: ['packaging/**']
@@ -17,6 +20,14 @@ on:
         default: 'main'
       cli_ref:
         description: 'Noctorium-cli branch, tag or commit to build (for the Mac)'
+        required: false
+        default: 'main'
+      stats_desktop_ref:
+        description: 'Noctorium-Stats-Desktop branch, tag or commit to build'
+        required: false
+        default: 'main'
+      stats_mobile_ref:
+        description: 'Noctorium-Stats-Mobile branch, tag or commit to build'
         required: false
         default: 'main'
       version:
@@ -76,3 +87,14 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       desktop_ref: ${{ inputs.desktop_ref || 'main' }}
       cli_ref: ${{ inputs.cli_ref || 'main' }}
+
+  stats:
+    name: Noctorium Stats
+    needs: version
+    uses: ./.github/workflows/stats.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      desktop_ref: ${{ inputs.stats_desktop_ref || 'main' }}
+      mobile_ref: ${{ inputs.stats_mobile_ref || 'main' }}
+    # For the APK's signing key. Without it the APK is signed with the debug key, and says so.
+    secrets: inherit
