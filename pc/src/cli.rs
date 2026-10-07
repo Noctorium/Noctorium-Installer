@@ -15,14 +15,15 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 pub const USAGE: &str = "\
-Installs Noctorium, the music player, or the Noctorium CLI, or both, from the latest release on GitHub.
-It shows what it found and asks before it changes anything; every question has a default, which --yes
-takes.
+Installs Noctorium, the music player, the Noctorium CLI, or Noctorium Stats -- any or all of them -- from
+the latest release on GitHub. It shows what it found and asks before it changes anything; every question
+has a default, which --yes takes.
 
 Usage: noctorium-installer-cli [options]
 
   -y, --yes             ask nothing: take the defaults and install
-      --product WHAT    desktop (the default), cli, or both
+      --product WHAT    desktop (the default), cli, stats, both (Noctorium and the CLI) or all, or
+                        several joined by commas, such as desktop,stats
       --format HOW      Linux only: auto (the default), deb, rpm, arch, appimage or flatpak
       --wizard          Windows only: open the Noctorium setup's own wizard, to choose the folder it goes
                         in, rather than installing with a progress bar and nothing to click
@@ -45,15 +46,24 @@ Usage: noctorium-installer-cli [options]
   is: Windows asks for permission, and after that there is nothing to click. A release with no .msi has
   its setup .exe run instead. Neither Windows nor a Mac takes --format.
 
-  Both products download at once, and each is installed as soon as its own download has been checked.
-  Downloads are kept in the temporary folder, under noctorium-installer, until they are installed: a run
-  that is stopped part of the way, or an install that is cancelled, leaves what it got, and the next run
-  checks it against the release's checksums and carries on from it rather than starting again.
+  The Noctorium CLI and Noctorium Stats are installed for you alone, with no password: unpacked into a
+  folder of their own, %LOCALAPPDATA%\\Programs on Windows and ~/.local/share elsewhere, with the CLI on
+  your PATH and Stats in the Start menu or the applications menu. On a Mac, Noctorium Stats.app goes into
+  Applications beside Noctorium. Installing either again replaces it whole.
+
+  Everything chosen downloads at once, and each is installed as soon as its own download has been
+  checked. Downloads are kept in the temporary folder, under noctorium-installer, until they are
+  installed: a run that is stopped part of the way, or an install that is cancelled, leaves what it got,
+  and the next run checks it against the release's checksums and carries on from it rather than starting
+  again.
 
 Environment:
   GITHUB_TOKEN          raises GitHub's rate limit
+  NOCTORIUM_PRODUCT     what --product would say, for when there is no way to pass options -- such as
+                        irm | iex in PowerShell; --product itself wins over it
   NOCTORIUM_REPOSITORY  the repository to install from, as owner/name
-  NOCTORIUM_NO_PATH     unpack the Noctorium CLI and leave your PATH, and a Mac's ~/.zprofile, as they are
+  NOCTORIUM_NO_PATH     unpack the Noctorium CLI and leave your PATH, a Mac's ~/.zprofile and Windows'
+                        list of installed apps as they are
   NO_COLOR              no colour
 
 Exit status: 0 when it did what was asked, 1 when it did not -- including when the answer to \"Install?\"
@@ -63,6 +73,8 @@ Examples:
   noctorium-installer-cli                          ask, then install
   noctorium-installer-cli --yes                    install Noctorium the way this machine prefers
   noctorium-installer-cli --product both -y        Noctorium and the Noctorium CLI
+  noctorium-installer-cli --product stats -y       Noctorium Stats, your listening in figures
+  noctorium-installer-cli --product desktop,stats  Noctorium, and Noctorium Stats beside it
   noctorium-installer-cli --format appimage        the AppImage, whatever the distribution
   noctorium-installer-cli --wizard                 on Windows, choose the folder in the setup's own wizard
   noctorium-installer-cli --product both --download-only -y    fetch both now, install them later
@@ -162,12 +174,8 @@ pub fn parse(arguments: &[String]) -> Result<Request, UsageError> {
                 args.no_color = true
             }
             "--product" => {
-                let word = value("a product: desktop, cli or both")?;
-                args.products = Some(Products::parse(&word).ok_or_else(|| {
-                    UsageError(format!(
-                        "--product takes desktop, cli or both, not \"{word}\"."
-                    ))
-                })?);
+                let word = value("a product: desktop, cli, stats, both or all")?;
+                args.products = Some(parse_products("--product", &word)?);
             }
             "--format" => {
                 let word = value("a format: auto, deb, rpm, arch, appimage or flatpak")?;
@@ -200,6 +208,30 @@ pub fn parse(arguments: &[String]) -> Result<Request, UsageError> {
         }
     }
     Ok(Request::Install(args))
+}
+
+/// What `--product`, or NOCTORIUM_PRODUCT -- named [from] -- says, or why it says nothing.
+fn parse_products(from: &str, words: &str) -> Result<Products, UsageError> {
+    Products::parse(words).ok_or_else(|| {
+        UsageError(format!(
+            "{from} takes desktop, cli, stats, both (Noctorium and the CLI) or all, or several joined by \
+             commas, such as desktop,stats -- not \"{words}\"."
+        ))
+    })
+}
+
+/// The products NOCTORIUM_PRODUCT asks for, when it is set to anything.
+///
+/// For the one way of running this that cannot pass it an option: `irm | iex` in PowerShell, which runs
+/// the one-line script with nothing after it. An environment variable set first reaches the installer
+/// that script runs, as it would any program.
+fn products_from_environment() -> Result<Option<Products>, UsageError> {
+    match std::env::var("NOCTORIUM_PRODUCT") {
+        Ok(words) if !words.trim().is_empty() => {
+            parse_products("NOCTORIUM_PRODUCT", words.trim()).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// `1.2.3`, or `1.2.3-beta.1`: digits and dots, then anything a tag allows after a hyphen.
@@ -321,6 +353,12 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
                 .into(),
         ));
     }
+    // Read here rather than in parse, which is a function of the command line alone; and before GitHub is
+    // asked anything, for the same reason as --format.
+    let asked_for = match args.products {
+        Some(products) => Some(products),
+        None => products_from_environment().map_err(|UsageError(why)| Failure::Usage(why))?,
+    };
     let interactive = !args.yes;
     term.banner();
 
@@ -338,14 +376,14 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
         return Ok(());
     }
 
-    let products = match args.products {
+    let products = match asked_for {
         Some(products) => products,
         None if interactive => choose_products(term, &found)?,
-        None => Products::Desktop,
+        None => Products::DESKTOP,
     };
     let format = match args.format {
         Some(format) => format,
-        None if interactive && products != Products::Cli && found.system.os == Os::Linux => {
+        None if interactive && products.desktop && found.system.os == Os::Linux => {
             choose_format(term, &found)?
         }
         None => Format::Auto,
@@ -360,6 +398,23 @@ fn run(args: &Args, term: &Term) -> Result<(), Failure> {
         wizard: args.wizard,
     };
     let plan = flow::plan(&found, options)?;
+    // Only Noctorium Stats was asked for, of a release from before it. Said, and not a failure: nothing
+    // went wrong, there is simply nothing yet to install -- and a script that runs this against whatever
+    // release is latest should not break the day it meets one from before Stats.
+    if plan.items.is_empty() {
+        for note in &plan.notes {
+            println!();
+            term.warn(note);
+        }
+        println!(
+            "\n  {}",
+            term.paint(
+                Paint::Dim,
+                "Nothing else was asked for, so nothing has been installed."
+            )
+        );
+        return Ok(());
+    }
     let install = !args.download_only;
     show_plan(term, &plan, install);
 
@@ -442,6 +497,7 @@ fn show_files(term: &Term, found: &Found) {
         .into_iter()
         .filter_map(|offer| offer.asset.map(|a| (a.name, "Noctorium")))
         .chain(flow::cli_asset(found).map(|a| (a.name.clone(), "Noctorium CLI")))
+        .chain(flow::stats_asset(found).map(|a| (a.name.clone(), "Noctorium Stats")))
         .collect();
     let width = found
         .release
@@ -467,8 +523,12 @@ fn show_files(term: &Term, found: &Found) {
 
 // ---------------------------------------------------------------- questions
 
+/// The products, as a menu. The first three are what they were before Noctorium Stats, so an answer that
+/// was right then is right now -- 3 is still Noctorium and the CLI -- and Stats is the fourth; several
+/// numbers together choose all of them.
 fn choose_products(term: &Term, found: &Found) -> Result<Products, Failure> {
     let cli = flow::cli_asset(found).map(|a| a.size);
+    let stats = flow::stats_asset(found).map(|a| a.size);
     // What this machine would download for Noctorium, which on Linux is the format auto would pick.
     let desktop = flow::offers(found)
         .into_iter()
@@ -496,15 +556,31 @@ fn choose_products(term: &Term, found: &Found) -> Result<Products, Failure> {
         Choice {
             label: "Both".into(),
             detail: match (desktop, cli) {
-                (Some(d), Some(c)) => format!("{}, downloaded at once", size(d + c)),
-                _ => String::new(),
+                (Some(d), Some(c)) => format!("Noctorium and the CLI, {}, at once", size(d + c)),
+                _ => "Noctorium and the CLI".into(),
             },
             unavailable: cli.is_none().then(|| missing.clone()),
             recommended: false,
         },
+        Choice {
+            label: "Noctorium Stats".into(),
+            detail: sized("your listening, in figures, in a window", stats),
+            unavailable: stats.is_none().then(|| missing.clone()),
+            recommended: false,
+        },
     ];
-    let picked = term.menu("What would you like to install?", &choices, 0)?;
-    Ok([Products::Desktop, Products::Cli, Products::Both][picked])
+    const PICKS: [Products; 4] = [
+        Products::DESKTOP,
+        Products::CLI,
+        Products::BOTH,
+        Products::STATS,
+    ];
+    let picked = term.menu("What would you like to install?", &choices, 0, true)?;
+    Ok(picked
+        .into_iter()
+        .map(|index| PICKS[index])
+        .reduce(Products::with)
+        .unwrap_or_default())
 }
 
 fn choose_format(term: &Term, found: &Found) -> Result<Format, Failure> {
@@ -524,8 +600,13 @@ fn choose_format(term: &Term, found: &Found) -> Result<Format, Failure> {
         })
         .collect();
     let default = offers.iter().position(|o| o.recommended).unwrap_or(0);
-    let picked = term.menu("How should Noctorium be installed?", &choices, default)?;
-    Ok(Format::of(offers[picked].method))
+    let picked = term.menu(
+        "How should Noctorium be installed?",
+        &choices,
+        default,
+        false,
+    )?;
+    Ok(Format::of(offers[picked[0]].method))
 }
 
 struct Choice {
@@ -676,7 +757,7 @@ fn carry_out(term: &Term, plan: &Plan, install: bool) -> (Vec<Option<bool>>, Res
     let header = format!(
         "\n  {} {}{}",
         term.paint(Paint::Accent, term.glyphs.down),
-        term.paint(Paint::Bold, &names.join(" and ")),
+        term.paint(Paint::Bold, &joined(&names)),
         term.paint(Paint::Dim, together)
     );
     let mut screen = Screen::new(term, plan, install);
@@ -1094,6 +1175,15 @@ impl Bar {
     }
 }
 
+/// `a`, `a and b`, `a, b and c`.
+fn joined(words: &[&str]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 fn size(bytes: u64) -> String {
     if bytes >= 1_048_576 {
         megabytes(bytes)
@@ -1295,8 +1385,16 @@ impl Term {
         }
     }
 
-    /// A numbered list and a prompt, asked until the answer is one of the numbers.
-    fn menu(&self, question: &str, choices: &[Choice], default: usize) -> Result<usize, Failure> {
+    /// A numbered list and a prompt, asked until the answer is one of the numbers -- or, when [several]
+    /// allows it, some of them, such as `1 4` -- and none of them one that cannot be had. What was chosen
+    /// comes back in the order of the list.
+    fn menu(
+        &self,
+        question: &str,
+        choices: &[Choice],
+        default: usize,
+        several: bool,
+    ) -> Result<Vec<usize>, Failure> {
         println!(
             "
   {}",
@@ -1329,40 +1427,79 @@ impl Term {
                 }
             }
         }
+        let prompt = if several {
+            format!(
+                "Choose 1-{}, or several, such as 1 {}",
+                choices.len(),
+                choices.len()
+            )
+        } else {
+            format!("Choose 1-{}", choices.len())
+        };
         loop {
             print!(
                 "  {} {} ",
-                self.paint(Paint::Bold, &format!("Choose 1-{}", choices.len())),
+                self.paint(Paint::Bold, &prompt),
                 self.paint(Paint::Dim, &format!("[{}]", default + 1))
             );
             let answer = read_answer()?;
-            let picked = if answer.is_empty() {
-                Some(default)
-            } else {
-                answer
-                    .parse::<usize>()
-                    .ok()
-                    .filter(|n| (1..=choices.len()).contains(n))
-                    .map(|n| n - 1)
-            };
-            match picked {
-                Some(index) => match &choices[index].unavailable {
+            match menu_answer(&answer, choices.len(), default, several) {
+                Some(picked) => match picked
+                    .iter()
+                    .find_map(|index| choices[*index].unavailable.as_ref())
+                {
                     Some(why) => println!(
                         "  {}",
                         self.paint(Paint::Warn, &format!("{why} Choose another."))
                     ),
-                    None => return Ok(index),
+                    None => return Ok(picked),
                 },
                 None => println!(
                     "  {}",
                     self.paint(
                         Paint::Dim,
-                        &format!("A number from 1 to {}, please.", choices.len())
+                        &if several {
+                            format!(
+                                "Numbers from 1 to {}, with spaces or commas between them, please.",
+                                choices.len()
+                            )
+                        } else {
+                            format!("A number from 1 to {}, please.", choices.len())
+                        }
                     )
                 ),
             }
         }
     }
+}
+
+/// What an answer to a menu of [count] choices picked, as indices in the order of the list: [default] for
+/// nothing, one number, or -- when [several] allows -- numbers with spaces, commas or plus signs between
+/// them, each counted once. Nothing for an answer that is not that.
+fn menu_answer(answer: &str, count: usize, default: usize, several: bool) -> Option<Vec<usize>> {
+    let words: Vec<&str> = answer
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '+')
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.is_empty() {
+        return Some(vec![default]);
+    }
+    if words.len() > 1 && !several {
+        return None;
+    }
+    let mut picked = Vec::new();
+    for word in words {
+        let index = word
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=count).contains(n))?
+            - 1;
+        if !picked.contains(&index) {
+            picked.push(index);
+        }
+    }
+    picked.sort_unstable();
+    Some(picked)
 }
 
 /// Splits [text] into lines no wider than [width], at spaces, keeping any line breaks it already has.
@@ -1530,7 +1667,7 @@ mod tests {
             args,
             Args {
                 yes: true,
-                products: Some(Products::Both),
+                products: Some(Products::BOTH),
                 format: Some(Format::AppImage),
                 wizard: true,
                 version: Some("0.6.0".into()),
@@ -1546,9 +1683,72 @@ mod tests {
         assert!(install("--no-colour").no_color, "and in British");
     }
 
+    /// Every answer --product took before Noctorium Stats means what it meant, and Stats is had alone,
+    /// with the others, or with everything.
+    #[test]
+    fn the_products_are_named_alone_or_together() {
+        assert_eq!(
+            install("--product desktop").products,
+            Some(Products::DESKTOP)
+        );
+        assert_eq!(install("--product cli").products, Some(Products::CLI));
+        assert_eq!(install("--product both").products, Some(Products::BOTH));
+        assert_eq!(install("--product stats").products, Some(Products::STATS));
+        assert_eq!(install("--product all").products, Some(Products::ALL));
+        assert_eq!(
+            install("--product=desktop,stats").products,
+            Some(Products::DESKTOP.with(Products::STATS))
+        );
+        assert_eq!(
+            install("--product cli+stats").products,
+            Some(Products::CLI.with(Products::STATS))
+        );
+        let why = refused("--product stats,charts");
+        assert!(
+            why.contains("--product takes desktop, cli, stats") && why.contains("stats,charts"),
+            "{why}"
+        );
+        let why = parse_products("NOCTORIUM_PRODUCT", "everything")
+            .unwrap_err()
+            .0;
+        assert!(why.starts_with("NOCTORIUM_PRODUCT takes"), "{why}");
+    }
+
+    /// The menu's answers: what was 1, 2 or 3 before Stats still is, and several are taken together.
+    #[test]
+    fn a_menu_takes_one_number_or_several() {
+        assert_eq!(menu_answer("", 4, 0, true), Some(vec![0]));
+        assert_eq!(menu_answer("  ", 4, 2, false), Some(vec![2]));
+        assert_eq!(menu_answer("3", 4, 0, true), Some(vec![2]));
+        assert_eq!(menu_answer("4 1", 4, 0, true), Some(vec![0, 3]));
+        assert_eq!(menu_answer("1,4", 4, 0, true), Some(vec![0, 3]));
+        assert_eq!(menu_answer("2+4", 4, 0, true), Some(vec![1, 3]));
+        assert_eq!(
+            menu_answer("4 4", 4, 0, true),
+            Some(vec![3]),
+            "once is enough"
+        );
+        assert_eq!(
+            menu_answer("1 4", 4, 0, false),
+            None,
+            "one, for a question of one"
+        );
+        assert_eq!(menu_answer("5", 4, 0, true), None);
+        assert_eq!(menu_answer("0", 4, 0, true), None);
+        assert_eq!(menu_answer("1 x", 4, 0, true), None);
+        assert_eq!(menu_answer("14", 4, 0, true), None);
+    }
+
+    #[test]
+    fn three_things_are_joined_as_a_sentence_joins_them() {
+        assert_eq!(joined(&["a"]), "a");
+        assert_eq!(joined(&["a", "b"]), "a and b");
+        assert_eq!(joined(&["a", "b", "c"]), "a, b and c");
+    }
+
     #[test]
     fn values_go_after_the_flag_or_after_an_equals_sign() {
-        assert_eq!(install("--product=cli").products, Some(Products::Cli));
+        assert_eq!(install("--product=cli").products, Some(Products::CLI));
         assert_eq!(install("--format=deb").format, Some(Format::Deb));
         assert_eq!(install("--version=1.2.3").version.as_deref(), Some("1.2.3"));
     }
@@ -1582,7 +1782,7 @@ mod tests {
 
     #[test]
     fn a_flag_without_its_value_says_what_it_wanted() {
-        assert!(refused("--product").contains("desktop, cli or both"));
+        assert!(refused("--product").contains("desktop, cli, stats, both or all"));
         assert!(refused("--format --yes").contains("auto, deb, rpm"));
         let why = refused("--version");
         assert!(
@@ -1641,6 +1841,9 @@ mod tests {
         assert!(USAGE.contains("--wizard"));
         assert!(USAGE.contains("--download-only"));
         assert!(USAGE.contains("NOCTORIUM_NO_PATH"));
+        assert!(USAGE.contains("NOCTORIUM_PRODUCT"));
+        assert!(USAGE
+            .contains("desktop (the default), cli, stats, both (Noctorium and the CLI) or all"));
         // The usage is printed into terminals as narrow as a hundred and ten columns.
         for line in USAGE.lines() {
             assert!(line.chars().count() <= 106, "too wide: {line}");

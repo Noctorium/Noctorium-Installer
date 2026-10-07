@@ -48,7 +48,7 @@ fn main() {
                 .map(|round| {
                     let into = base.join(format!("round-{round}")).join("Noctorium CLI");
                     let started = Instant::now();
-                    noctorium_installer::archive::install_folder(&archive, &into)
+                    noctorium_installer::archive::install_folder(&archive, &into, "the Noctorium CLI")
                         .unwrap_or_else(|problem| panic!("{problem}"));
                     started.elapsed()
                 })
@@ -98,7 +98,7 @@ fn both(version: &str, folder: &Path, connections: u64, at_once: bool, rounds: u
     let plan = flow::plan(
         &found,
         Options {
-            products: Products::Both,
+            products: Products::BOTH,
             ..Options::default()
         },
     )

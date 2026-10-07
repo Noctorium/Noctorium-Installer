@@ -185,6 +185,12 @@ pub enum Wanted {
     CliLinux,
     /// `noctorium-cli-<version>-macos-arm64.tar.gz`, or `-macos-x64.tar.gz`.
     CliMac,
+    /// `noctorium-stats-<version>-windows-x64.zip`, Noctorium Stats: `Noctorium Stats.exe` on its own.
+    StatsWindows,
+    /// `noctorium-stats-<version>-linux-x64.tar.gz`: the program, its menu entry and its icon.
+    StatsLinux,
+    /// `noctorium-stats-<version>-macos-arm64.zip`, or `-macos-x64.zip`: `Noctorium Stats.app`.
+    StatsMac,
 }
 
 impl Wanted {
@@ -213,6 +219,19 @@ impl Wanted {
                 "noctorium-cli-",
                 format!("-macos-{}.tar.gz", arch.windows()),
             ),
+            // Named the way the Noctorium CLI's are, with Windows' word for the processor everywhere. A
+            // Mac's is a .zip rather than a disk image: it is one application and nothing else, with no
+            // Applications link beside it to drag it onto, and a zip is what the Finder opens with a
+            // double click.
+            Wanted::StatsWindows => (
+                "noctorium-stats-",
+                format!("-windows-{}.zip", arch.windows()),
+            ),
+            Wanted::StatsLinux => (
+                "noctorium-stats-",
+                format!("-linux-{}.tar.gz", arch.windows()),
+            ),
+            Wanted::StatsMac => ("noctorium-stats-", format!("-macos-{}.zip", arch.windows())),
         }
     }
 
@@ -252,9 +271,10 @@ impl Wanted {
         else {
             return false;
         };
-        // A version starts with a digit. That one rule is what keeps `noctorium-cli-1.0.0-...` from
-        // answering for the desktop's `noctorium-<version>-...`, and a signature or a checksum file beside
-        // a package from being mistaken for it -- their names do not end where a package's does.
+        // A version starts with a digit. That one rule is what keeps `noctorium-cli-1.0.0-...` and
+        // `noctorium-stats-1.0.0-...` from answering for the desktop's `noctorium-<version>-...`, and a
+        // signature or a checksum file beside a package from being mistaken for it -- their names do not
+        // end where a package's does.
         version.starts_with(|c: char| c.is_ascii_digit()) && !version.contains('/')
     }
 }
@@ -376,6 +396,41 @@ mod tests {
       ]
     }"#;
 
+    /// A release with Noctorium Stats in it: everything 0.8 carried, and the five files of Stats -- an
+    /// archive for each of the four computers and an APK -- which makes the twenty-seven a draft has.
+    const RELEASE_WITH_STATS: &str = r#"{
+      "tag_name": "v0.13.0",
+      "assets": [
+        {"name": "noctorium-0.13.0-1-x86_64.pkg.tar.zst", "browser_download_url": "https://example.test/x.zst", "size": 250000000},
+        {"name": "Noctorium-0.13.0-macos-arm64.dmg", "browser_download_url": "https://example.test/arm64.dmg", "size": 255000000},
+        {"name": "Noctorium-0.13.0-macos-x64.dmg", "browser_download_url": "https://example.test/x64.dmg", "size": 258000000},
+        {"name": "Noctorium-0.13.0-windows-x64-setup.exe", "browser_download_url": "https://example.test/setup.exe", "size": 340636160},
+        {"name": "Noctorium-0.13.0-windows-x64.msi", "browser_download_url": "https://example.test/x.msi", "size": 339905750},
+        {"name": "Noctorium-0.13.0-x86_64.AppImage", "browser_download_url": "https://example.test/x.AppImage", "size": 260000000},
+        {"name": "Noctorium-0.13.0-x86_64.flatpak", "browser_download_url": "https://example.test/x.flatpak", "size": 270000000},
+        {"name": "Noctorium-0.13.0.apk", "browser_download_url": "https://example.test/x.apk", "size": 17600515},
+        {"name": "noctorium-0.13.0.x86_64.rpm", "browser_download_url": "https://example.test/x.rpm", "size": 264015322},
+        {"name": "noctorium-cli-0.13.0-linux-x64.tar.gz", "browser_download_url": "https://example.test/cli.tgz", "size": 61000000},
+        {"name": "noctorium-cli-0.13.0-macos-arm64.tar.gz", "browser_download_url": "https://example.test/cli-arm64.tgz", "size": 59000000},
+        {"name": "noctorium-cli-0.13.0-macos-x64.tar.gz", "browser_download_url": "https://example.test/cli-x64.tgz", "size": 60500000},
+        {"name": "noctorium-cli-0.13.0-windows-x64.zip", "browser_download_url": "https://example.test/cli.zip", "size": 60000000},
+        {"name": "Noctorium-Installer-android.apk", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-cli-linux-x64", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-cli-macos", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-cli-windows-x64.exe", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-installer-linux-x64", "browser_download_url": "u", "size": 1},
+        {"name": "Noctorium-Installer-windows-x64.exe", "browser_download_url": "u", "size": 1},
+        {"name": "Noctorium-Installer-x86_64.AppImage", "browser_download_url": "u", "size": 1},
+        {"name": "noctorium-stats-0.13.0-linux-x64.tar.gz", "browser_download_url": "https://example.test/stats.tgz", "size": 7300000},
+        {"name": "noctorium-stats-0.13.0-macos-arm64.zip", "browser_download_url": "https://example.test/stats-arm64.zip", "size": 6900000},
+        {"name": "noctorium-stats-0.13.0-macos-x64.zip", "browser_download_url": "https://example.test/stats-x64.zip", "size": 7100000},
+        {"name": "noctorium-stats-0.13.0-windows-x64.zip", "browser_download_url": "https://example.test/stats.zip", "size": 6400000},
+        {"name": "Noctorium-Stats-0.13.0.apk", "browser_download_url": "https://example.test/stats.apk", "size": 21000000},
+        {"name": "noctorium_0.13.0_amd64.deb", "browser_download_url": "https://example.test/x.deb", "size": 251486386},
+        {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.test/SHA256SUMS.txt", "size": 2400}
+      ]
+    }"#;
+
     /// Every file this ever looks for.
     const EVERY_WANTED: &[Wanted] = &[
         Wanted::WindowsMsi,
@@ -389,6 +444,9 @@ mod tests {
         Wanted::CliWindows,
         Wanted::CliLinux,
         Wanted::CliMac,
+        Wanted::StatsWindows,
+        Wanted::StatsLinux,
+        Wanted::StatsMac,
     ];
 
     fn picked(release: &Release, wanted: Wanted, arch: Arch) -> Option<&str> {
@@ -510,6 +568,8 @@ mod tests {
                 (Wanted::CliWindows, _) => Some("noctorium-cli-0.8.0-windows-x64.zip"),
                 (Wanted::CliLinux, _) => Some("noctorium-cli-0.8.0-linux-x64.tar.gz"),
                 (Wanted::CliMac, _) => Some("noctorium-cli-0.8.0-macos-x64.tar.gz"),
+                // Noctorium Stats came later.
+                (Wanted::StatsWindows | Wanted::StatsLinux | Wanted::StatsMac, _) => None,
             }
         };
         for arch in [Arch::X86_64, Arch::Aarch64] {
@@ -524,6 +584,94 @@ mod tests {
                 assert_eq!(matching, expected, "{wanted:?} on {arch:?}");
             }
         }
+    }
+
+    /// The same, with Noctorium Stats beside everything else: its archives are named like the Noctorium
+    /// CLI's, its Mac one is a .zip like the CLI's Windows one, and none of the three may answer for
+    /// anything but itself -- nor may anything else answer for them.
+    #[test]
+    fn with_noctorium_stats_beside_it_each_file_still_answers_only_for_its_own() {
+        let release = Release::from_json(RELEASE_WITH_STATS).expect("should parse");
+        assert_eq!(release.assets.len(), 27, "what a draft has since Stats");
+        let expected = |wanted: Wanted, arch: Arch| -> Option<&'static str> {
+            match (wanted, arch) {
+                (Wanted::MacDiskImage, Arch::Aarch64) => Some("Noctorium-0.13.0-macos-arm64.dmg"),
+                (Wanted::CliMac, Arch::Aarch64) => Some("noctorium-cli-0.13.0-macos-arm64.tar.gz"),
+                (Wanted::StatsMac, Arch::Aarch64) => Some("noctorium-stats-0.13.0-macos-arm64.zip"),
+                (_, Arch::Aarch64) => None,
+                (Wanted::WindowsMsi, _) => Some("Noctorium-0.13.0-windows-x64.msi"),
+                (Wanted::WindowsSetup, _) => Some("Noctorium-0.13.0-windows-x64-setup.exe"),
+                (Wanted::MacDiskImage, _) => Some("Noctorium-0.13.0-macos-x64.dmg"),
+                (Wanted::DebianPackage, _) => Some("noctorium_0.13.0_amd64.deb"),
+                (Wanted::RpmPackage, _) => Some("noctorium-0.13.0.x86_64.rpm"),
+                (Wanted::ArchPackage, _) => Some("noctorium-0.13.0-1-x86_64.pkg.tar.zst"),
+                (Wanted::AppImage, _) => Some("Noctorium-0.13.0-x86_64.AppImage"),
+                (Wanted::Flatpak, _) => Some("Noctorium-0.13.0-x86_64.flatpak"),
+                (Wanted::CliWindows, _) => Some("noctorium-cli-0.13.0-windows-x64.zip"),
+                (Wanted::CliLinux, _) => Some("noctorium-cli-0.13.0-linux-x64.tar.gz"),
+                (Wanted::CliMac, _) => Some("noctorium-cli-0.13.0-macos-x64.tar.gz"),
+                (Wanted::StatsWindows, _) => Some("noctorium-stats-0.13.0-windows-x64.zip"),
+                (Wanted::StatsLinux, _) => Some("noctorium-stats-0.13.0-linux-x64.tar.gz"),
+                (Wanted::StatsMac, _) => Some("noctorium-stats-0.13.0-macos-x64.zip"),
+            }
+        };
+        for arch in [Arch::X86_64, Arch::Aarch64] {
+            for &wanted in EVERY_WANTED {
+                let matching: Vec<&str> = release
+                    .assets
+                    .iter()
+                    .filter(|asset| wanted.matches(&asset.name, arch))
+                    .map(|asset| asset.name.as_str())
+                    .collect();
+                let expected: Vec<&str> = expected(wanted, arch).into_iter().collect();
+                assert_eq!(matching, expected, "{wanted:?} on {arch:?}");
+            }
+        }
+        // The phone's APK is never anything a computer takes, Noctorium's or Stats'.
+        for &wanted in EVERY_WANTED {
+            assert!(!wanted.matches("Noctorium-Stats-0.13.0.apk", Arch::X86_64));
+        }
+    }
+
+    #[test]
+    fn noctorium_stats_and_the_others_are_never_confused() {
+        let x64 = Arch::X86_64;
+        assert!(!Wanted::CliWindows.matches("noctorium-stats-1.0.0-windows-x64.zip", x64));
+        assert!(!Wanted::CliLinux.matches("noctorium-stats-1.0.0-linux-x64.tar.gz", x64));
+        assert!(!Wanted::CliMac.matches("noctorium-stats-1.0.0-macos-x64.tar.gz", x64));
+        assert!(!Wanted::StatsWindows.matches("noctorium-cli-1.0.0-windows-x64.zip", x64));
+        assert!(!Wanted::StatsLinux.matches("noctorium-cli-1.0.0-linux-x64.tar.gz", x64));
+        assert!(!Wanted::StatsMac.matches("noctorium-1.0.0-macos-x64.zip", x64));
+        assert!(
+            !Wanted::StatsMac.matches("noctorium-stats-1.0.0-macos-x64.tar.gz", x64),
+            "a Mac's Stats is a .zip"
+        );
+        assert!(
+            !Wanted::StatsLinux.matches("noctorium-stats-1.0.0-macos-x64.tar.gz", x64),
+            "nor is a Mac's file a Linux one"
+        );
+        assert!(!Wanted::StatsWindows.matches("noctorium-stats-1.0.0-windows-x64.zip.sha256", x64));
+        assert!(
+            !Wanted::StatsWindows.matches("noctorium-stats--windows-x64.zip", x64),
+            "no version"
+        );
+        // Its archives say the processor the way the CLI's do.
+        let arm = Arch::Aarch64;
+        assert!(Wanted::StatsMac.matches("noctorium-stats-1.0.0-macos-arm64.zip", arm));
+        assert!(!Wanted::StatsMac.matches("noctorium-stats-1.0.0-macos-arm64.zip", x64));
+        assert!(Wanted::StatsLinux.matches("noctorium-stats-1.0.0-linux-arm64.tar.gz", arm));
+        assert_eq!(
+            Wanted::StatsWindows.pattern(x64),
+            "noctorium-stats-<version>-windows-x64.zip"
+        );
+        assert_eq!(
+            Wanted::StatsLinux.pattern(x64),
+            "noctorium-stats-<version>-linux-x64.tar.gz"
+        );
+        assert_eq!(
+            Wanted::StatsMac.pattern(arm),
+            "noctorium-stats-<version>-macos-arm64.zip"
+        );
     }
 
     /// The Mac's names share their shape with the others' -- `-x64` with Windows, `.tar.gz` with Linux --

@@ -1,10 +1,13 @@
-//! Unpacking the Noctorium CLI into a folder of its own, over an older copy if there is one.
+//! Unpacking the Noctorium CLI, or Noctorium Stats, into a folder of its own, over an older copy if there
+//! is one.
 //!
 //! The terminal player ships as an archive of a whole program folder -- a launcher, its Java runtime and
 //! its jars -- rather than as a package, so installing it is unpacking it somewhere the user owns. That is
 //! simple until there is already a copy there: unpacking on top of it would leave behind every file the
 //! old version had and the new one does not, and an old jar left on the class path is the kind of fault
 //! that takes a day to find. So the new copy is unpacked beside the old one, and swapped in whole.
+//! Noctorium Stats is one program and a few files beside it, but it is installed the same way, for the
+//! same reason and with the same code.
 
 use crate::github::Problem;
 use std::fs::{self, File};
@@ -34,8 +37,9 @@ fn kind_of(archive: &Path) -> Option<Kind> {
 /// An archive with a single folder at the top -- `noctorium-cli/`, which is how it is published -- has
 /// that folder become [destination]; one with several things at the top has them all put inside it.
 /// Either way nothing of an earlier copy survives, and if anything goes wrong before the swap the earlier
-/// copy is exactly as it was.
-pub fn install_folder(archive: &Path, destination: &Path) -> Result<(), Problem> {
+/// copy is exactly as it was. [product] is what is being installed, as somebody would name it, for the
+/// one failure that is usually theirs to put right: the old copy still running.
+pub fn install_folder(archive: &Path, destination: &Path, product: &str) -> Result<(), Problem> {
     let kind = kind_of(archive).ok_or_else(|| {
         Problem::Local(format!(
             "{} is neither a .zip nor a .tar.gz, so it cannot be unpacked.",
@@ -61,11 +65,7 @@ pub fn install_folder(archive: &Path, destination: &Path) -> Result<(), Problem>
     remove_if_there(&staging)?;
     fs::create_dir_all(&staging).map_err(|e| couldnt("make", &staging, e))?;
 
-    let unpacked = match kind {
-        Kind::TarGz => unpack_tar_gz(archive, &staging),
-        Kind::Zip => unpack_zip(archive, &staging),
-    };
-    if let Err(problem) = unpacked {
+    if let Err(problem) = unpack(archive, kind, &staging) {
         let _ = fs::remove_dir_all(&staging);
         return Err(problem);
     }
@@ -80,8 +80,8 @@ pub fn install_folder(archive: &Path, destination: &Path) -> Result<(), Problem>
         if let Err(e) = fs::rename(destination, &previous) {
             let _ = fs::remove_dir_all(&staging);
             return Err(Problem::Local(format!(
-                "Could not replace the copy already in {}: {e}. If the Noctorium CLI is running, close \
-                 it and try again.",
+                "Could not replace the copy already in {}: {e}. If {product} is running, close it and \
+                 try again.",
                 destination.display()
             )));
         }
@@ -100,6 +100,27 @@ pub fn install_folder(archive: &Path, destination: &Path) -> Result<(), Problem>
         let _ = fs::remove_dir_all(&staging);
     }
     Ok(())
+}
+
+fn unpack(archive: &Path, kind: Kind, into: &Path) -> Result<(), Problem> {
+    match kind {
+        Kind::TarGz => unpack_tar_gz(archive, into),
+        Kind::Zip => unpack_zip(archive, into),
+    }
+}
+
+/// Unpacks [archive] into the folder [into] as it is, with nothing swapped and nothing replaced: what a
+/// Mac's own `ditto -x -k` does, for the tests that stand in for it on machines that have none.
+#[cfg(test)]
+pub(crate) fn unpack_into(archive: &Path, into: &Path) -> Result<(), Problem> {
+    let kind = kind_of(archive).ok_or_else(|| {
+        Problem::Local(format!(
+            "{} is neither a .zip nor a .tar.gz, so it cannot be unpacked.",
+            archive.display()
+        ))
+    })?;
+    fs::create_dir_all(into).map_err(|e| couldnt("make", into, e))?;
+    unpack(archive, kind, into)
 }
 
 fn unpack_tar_gz(archive: &Path, into: &Path) -> Result<(), Problem> {
@@ -228,7 +249,7 @@ pub(crate) mod tests {
     }
 
     /// A .tar.gz shaped like the published Linux archive: one `noctorium-cli/` folder at the top.
-    fn tar_gz(at: &Path, files: &[(&str, &str, u32)]) {
+    pub(crate) fn tar_gz(at: &Path, files: &[(&str, &str, u32)]) {
         let file = File::create(at).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
         let mut builder = tar::Builder::new(encoder);
@@ -244,7 +265,7 @@ pub(crate) mod tests {
         builder.into_inner().unwrap().finish().unwrap();
     }
 
-    fn zip_file(at: &Path, files: &[(&str, &str)]) {
+    pub(crate) fn zip_file(at: &Path, files: &[(&str, &str)]) {
         let mut writer = zip::ZipWriter::new(File::create(at).unwrap());
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
@@ -279,7 +300,7 @@ pub(crate) mod tests {
             ],
         );
         let destination = here.join("share").join("noctorium-cli");
-        install_folder(&archive, &destination).expect("should unpack");
+        install_folder(&archive, &destination, "the Noctorium CLI").expect("should unpack");
 
         let launcher = destination.join("bin").join("noctorium");
         assert_eq!(
@@ -309,12 +330,12 @@ pub(crate) mod tests {
                 ("noctorium-cli/lib/app/old-only.jar", "stale", 0o644),
             ],
         );
-        install_folder(&first, &destination).expect("first install");
+        install_folder(&first, &destination, "the Noctorium CLI").expect("first install");
         assert!(destination.join("lib/app/old-only.jar").is_file());
 
         let second = here.join("noctorium-cli-1.1.0-linux-x64.tar.gz");
         tar_gz(&second, &[("noctorium-cli/bin/noctorium", "two", 0o755)]);
-        install_folder(&second, &destination).expect("upgrade");
+        install_folder(&second, &destination, "the Noctorium CLI").expect("upgrade");
 
         assert_eq!(
             fs::read_to_string(destination.join("bin/noctorium")).unwrap(),
@@ -337,7 +358,7 @@ pub(crate) mod tests {
         let destination = here.join("Noctorium CLI");
         let first = here.join("noctorium-cli-1.0.0-windows-x64.zip");
         zip_file(&first, &[("noctorium-cli/noctorium.exe", "one")]);
-        install_folder(&first, &destination).expect("first install");
+        install_folder(&first, &destination, "the Noctorium CLI").expect("first install");
 
         let theirs = [
             here.join("Noctorium CLI.update-1a2b3c"),
@@ -349,7 +370,7 @@ pub(crate) mod tests {
         }
         let second = here.join("noctorium-cli-1.1.0-windows-x64.zip");
         zip_file(&second, &[("noctorium-cli/noctorium.exe", "two")]);
-        install_folder(&second, &destination).expect("upgrade");
+        install_folder(&second, &destination, "the Noctorium CLI").expect("upgrade");
 
         assert_eq!(
             fs::read_to_string(destination.join("noctorium.exe")).unwrap(),
@@ -366,7 +387,8 @@ pub(crate) mod tests {
         // Even when the updater was stopped half way, with the install folder moved aside and nothing put
         // back yet: this is a first install, as far as this can tell.
         fs::rename(&destination, here.join("Noctorium CLI.old-4d5e6f")).unwrap();
-        install_folder(&second, &destination).expect("installs where there is nothing");
+        install_folder(&second, &destination, "the Noctorium CLI")
+            .expect("installs where there is nothing");
         assert!(destination.join("noctorium.exe").is_file());
         assert!(here
             .join("Noctorium CLI.old-4d5e6f/noctorium.exe")
@@ -387,7 +409,7 @@ pub(crate) mod tests {
             ],
         );
         let destination = here.join("Programs").join("Noctorium CLI");
-        install_folder(&archive, &destination).expect("should unpack");
+        install_folder(&archive, &destination, "the Noctorium CLI").expect("should unpack");
 
         assert_eq!(
             fs::read_to_string(destination.join("noctorium.exe")).unwrap(),
@@ -418,7 +440,7 @@ pub(crate) mod tests {
         let archive = here.join("flat.zip");
         zip_file(&archive, &[("noctorium.exe", "MZ"), ("app/a.jar", "jar")]);
         let destination = here.join("Noctorium CLI");
-        install_folder(&archive, &destination).expect("should unpack");
+        install_folder(&archive, &destination, "the Noctorium CLI").expect("should unpack");
         assert!(destination.join("noctorium.exe").is_file());
         assert!(destination.join("app/a.jar").is_file());
     }
@@ -430,7 +452,7 @@ pub(crate) mod tests {
         zip_file(&archive, &[("../escaped.txt", "nope")]);
         let destination = here.join("inside").join("Noctorium CLI");
         assert!(matches!(
-            install_folder(&archive, &destination),
+            install_folder(&archive, &destination, "the Noctorium CLI"),
             Err(Problem::Local(_))
         ));
         assert!(!here.join("inside").join("escaped.txt").exists());
@@ -447,7 +469,7 @@ pub(crate) mod tests {
         let file = here.join("noctorium.rar");
         fs::write(&file, "x").unwrap();
         assert!(matches!(
-            install_folder(&file, &here.join("out")),
+            install_folder(&file, &here.join("out"), "the Noctorium CLI"),
             Err(Problem::Local(_))
         ));
     }

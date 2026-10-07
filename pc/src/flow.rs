@@ -23,6 +23,9 @@ pub enum Product {
     Desktop,
     /// The terminal player.
     Cli,
+    /// Noctorium Stats, which signs in to the listener's Noctorium account and shows what they have
+    /// listened to: a program of its own, beside the player rather than part of it.
+    Stats,
 }
 
 impl Product {
@@ -30,49 +33,124 @@ impl Product {
         match self {
             Product::Desktop => "Noctorium",
             Product::Cli => "Noctorium CLI",
+            Product::Stats => "Noctorium Stats",
         }
     }
+
+    /// All of them, in the order they are offered, planned and listed.
+    pub const ALL: [Product; 3] = [Product::Desktop, Product::Cli, Product::Stats];
 }
 
-/// Which of them were asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Products {
-    #[default]
-    Desktop,
-    Cli,
-    Both,
+/// Which of them were asked for: any of the three, in any combination but none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Products {
+    pub desktop: bool,
+    pub cli: bool,
+    pub stats: bool,
+}
+
+impl Default for Products {
+    fn default() -> Self {
+        Products::DESKTOP
+    }
 }
 
 impl Products {
+    pub const DESKTOP: Products = Products {
+        desktop: true,
+        cli: false,
+        stats: false,
+    };
+    pub const CLI: Products = Products {
+        desktop: false,
+        cli: true,
+        stats: false,
+    };
+    pub const STATS: Products = Products {
+        desktop: false,
+        cli: false,
+        stats: true,
+    };
+    /// Noctorium and the Noctorium CLI, which is what `both` meant before there were three, and still
+    /// means: a script written then installs now what it installed then.
+    pub const BOTH: Products = Products {
+        desktop: true,
+        cli: true,
+        stats: false,
+    };
+    pub const ALL: Products = Products {
+        desktop: true,
+        cli: true,
+        stats: true,
+    };
+
     pub fn each(self) -> Vec<Product> {
-        match self {
-            Products::Desktop => vec![Product::Desktop],
-            Products::Cli => vec![Product::Cli],
-            Products::Both => vec![Product::Desktop, Product::Cli],
-        }
+        Product::ALL
+            .into_iter()
+            .filter(|product| self.includes(*product))
+            .collect()
     }
 
-    pub fn parse(word: &str) -> Option<Products> {
-        match word.to_ascii_lowercase().as_str() {
-            "desktop" => Some(Products::Desktop),
-            "cli" => Some(Products::Cli),
-            "both" => Some(Products::Both),
-            _ => None,
+    /// What `--product` takes: `desktop`, `cli`, `stats`, `both` (Noctorium and the CLI) or `all`, or
+    /// several of them joined by commas or plus signs -- `desktop,stats`. Nothing for a word it does not
+    /// know, or for nothing at all.
+    pub fn parse(words: &str) -> Option<Products> {
+        let mut products = Products::none();
+        for word in words.split([',', '+']).map(str::trim) {
+            let one = match word.to_ascii_lowercase().as_str() {
+                "desktop" => Products::DESKTOP,
+                "cli" => Products::CLI,
+                "stats" => Products::STATS,
+                "both" => Products::BOTH,
+                "all" => Products::ALL,
+                _ => return None,
+            };
+            products = products.with(one);
         }
+        (!products.is_empty()).then_some(products)
     }
 
-    /// From a yes or no for each, which is how the window asks; nothing when both are no.
-    pub fn from_choice(desktop: bool, cli: bool) -> Option<Products> {
-        match (desktop, cli) {
-            (true, true) => Some(Products::Both),
-            (true, false) => Some(Products::Desktop),
-            (false, true) => Some(Products::Cli),
-            (false, false) => None,
-        }
+    /// From a yes or no for each, which is how the window asks; nothing when all are no.
+    pub fn from_choice(desktop: bool, cli: bool, stats: bool) -> Option<Products> {
+        let products = Products {
+            desktop,
+            cli,
+            stats,
+        };
+        (!products.is_empty()).then_some(products)
     }
 
     pub fn includes(self, product: Product) -> bool {
-        self.each().contains(&product)
+        match product {
+            Product::Desktop => self.desktop,
+            Product::Cli => self.cli,
+            Product::Stats => self.stats,
+        }
+    }
+
+    /// These and [other] together.
+    pub fn with(self, other: Products) -> Products {
+        Products {
+            desktop: self.desktop || other.desktop,
+            cli: self.cli || other.cli,
+            stats: self.stats || other.stats,
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        !self.desktop && !self.cli && !self.stats
+    }
+
+    pub fn count(self) -> usize {
+        self.each().len()
+    }
+
+    fn none() -> Products {
+        Products {
+            desktop: false,
+            cli: false,
+            stats: false,
+        }
     }
 }
 
@@ -116,7 +194,10 @@ impl Format {
             | Method::MacDiskImage
             | Method::CliWindows
             | Method::CliLinux
-            | Method::CliMac => Format::Auto,
+            | Method::CliMac
+            | Method::StatsWindows
+            | Method::StatsLinux
+            | Method::StatsMac => Format::Auto,
         }
     }
 }
@@ -136,7 +217,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
-            products: Products::Desktop,
+            products: Products::DESKTOP,
             format: Format::Auto,
             asking: Asking::Window,
             wizard: false,
@@ -267,6 +348,14 @@ pub fn cli_asset(found: &Found) -> Option<&Asset> {
         .asset_for(Method::cli_for(found.system.os).wanted(), arch)
 }
 
+/// Noctorium Stats' file in this release for this machine, if it carries one.
+pub fn stats_asset(found: &Found) -> Option<&Asset> {
+    let arch = found.system.arch?;
+    found
+        .release
+        .asset_for(Method::stats_for(found.system.os).wanted(), arch)
+}
+
 /// What is about to happen, settled before anything is downloaded.
 #[derive(Debug, Clone)]
 pub struct Plan {
@@ -393,6 +482,16 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         let (method, asset) = match product {
             Product::Desktop => desktop_method(found, options.format, &mut notes)?,
             Product::Cli => cli_method(found, arch)?,
+            // Left out, with a word, rather than refused: Stats is new, and every release before it --
+            // the one an older installer, a script or `--version` is pointed at -- has none. Whatever else
+            // was asked for is installed all the same.
+            Product::Stats => match stats_method(found, arch) {
+                Some(chosen) => chosen,
+                None => {
+                    notes.push(stats_left_out(found));
+                    continue;
+                }
+            },
         };
         let published = github::published_checksum(listing, &asset.name).ok_or_else(|| {
             Problem::Missing(format!(
@@ -420,7 +519,7 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         if !method.needs_root()
             && !matches!(
                 method,
-                Method::WindowsMsi | Method::WindowsSetup | Method::MacDiskImage
+                Method::WindowsMsi | Method::WindowsSetup | Method::MacDiskImage | Method::StatsMac
             )
         {
             if let Some(user) = &system.sudo_user {
@@ -450,13 +549,14 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
             ));
         }
 
-        if method == Method::MacDiskImage {
+        if matches!(method, Method::MacDiskImage | Method::StatsMac) {
             if let Some(folder) = &found.places.applications {
                 if folder != Path::new("/Applications") {
                     notes.push(format!(
                         "This account cannot write to /Applications -- on a Mac that takes an \
-                         administrator -- so Noctorium goes into {}, which is yours alone. Spotlight \
-                         finds it there just the same.",
+                         administrator -- so {} goes into {}, which is yours alone. Spotlight finds it \
+                         there just the same.",
+                        product.name(),
                         found.places.show(folder)
                     ));
                 }
@@ -508,12 +608,24 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
                     .into(),
             );
         }
+        // Said only when it is all there is to say: with the Noctorium CLI beside it, the note above has
+        // said it already, and Noctorium Stats is in the applications menu whatever PATH says.
+        if method == Method::StatsLinux && !user_bin_on_path && !options.products.cli {
+            notes.push(
+                "~/.local/bin is not on your PATH, so `noctorium-stats` will not be found by name in a \
+                 terminal until it is. The applications menu has it either way."
+                    .into(),
+            );
+        }
         // Most Linux distributions put ~/.local/bin on PATH once it exists, and the end of the install says
         // what to do on one that does not. macOS never does, so on a Mac it is done here, and shown in
         // the plan like everything else that changes a file -- unless NOCTORIUM_NO_PATH asks for the
         // profile to be left alone.
         if method == Method::CliMac && !user_bin_on_path && !found.places.leave_path {
             actions.push(install::add_user_bin_to_path(&found.places)?);
+        }
+        if method == Method::StatsWindows {
+            actions.extend(install::list_installed(&found.places, found.version())?);
         }
         let start = install::how_to_start(method, &found.places, user_bin_on_path);
         items.push(Item {
@@ -713,6 +825,32 @@ fn cli_method(found: &Found, arch: Arch) -> Result<(Method, Asset), Problem> {
             method.wanted().pattern(arch)
         ))),
     }
+}
+
+/// The method and file for Noctorium Stats, or nothing when this release carries none for this machine.
+fn stats_method(found: &Found, arch: Arch) -> Option<(Method, Asset)> {
+    let method = Method::stats_for(found.system.os);
+    found
+        .release
+        .asset_for(method.wanted(), arch)
+        .map(|asset| (method, asset.clone()))
+}
+
+/// What is said when Noctorium Stats was asked for and this release has none for this machine.
+pub fn stats_left_out(found: &Found) -> String {
+    let system_name = match found.system.os {
+        Os::Windows => "Windows",
+        Os::MacOs => "macOS",
+        _ => "Linux",
+    };
+    let pattern = Method::stats_for(found.system.os)
+        .wanted()
+        .pattern(found.system.arch.unwrap_or(Arch::X86_64));
+    format!(
+        "Noctorium Stats is not in {} yet, so it is left out and nothing is downloaded for it. It is \
+         new, and comes for {system_name} as {pattern} from the release that first carries it.",
+        found.release.tag
+    )
 }
 
 fn join_or(words: &[String]) -> String {
@@ -1097,7 +1235,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
     #[test]
     fn both_products_on_a_mac_are_the_app_and_the_cli_with_path_put_right() {
         let options = Options {
-            products: Products::Both,
+            products: Products::BOTH,
             ..Options::default()
         };
         let plan = plan(&found_on_a_mac(Arch::Aarch64, WITH_MACS), options).expect("should plan");
@@ -1164,7 +1302,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
         );
 
         let options = Options {
-            products: Products::Cli,
+            products: Products::CLI,
             ..Options::default()
         };
         let said = plan(&found, options).unwrap_err().to_string();
@@ -1206,7 +1344,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
             ..found_on_a_mac(Arch::Aarch64, WITH_MACS)
         };
         let options = Options {
-            products: Products::Both,
+            products: Products::BOTH,
             ..Options::default()
         };
         let plan = plan(&found, options).expect("should plan");
@@ -1272,7 +1410,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
             &["noctorium_0.7.0_amd64.deb", "SHA256SUMS.txt"],
         );
         let options = Options {
-            products: Products::Cli,
+            products: Products::CLI,
             ..Options::default()
         };
         let said = plan(&found, options).unwrap_err().to_string();
@@ -1287,7 +1425,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
     fn both_products_are_planned_one_after_the_other() {
         let found = found(linux(Some(Family::Debian), Some(PackageManager::Apt)), ALL);
         let options = Options {
-            products: Products::Both,
+            products: Products::BOTH,
             ..Options::default()
         };
         let plan = plan(&found, options).expect("should plan");
@@ -1389,8 +1527,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
 
     #[test]
     fn products_and_formats_are_read_from_their_flags() {
-        assert_eq!(Products::parse("both"), Some(Products::Both));
-        assert_eq!(Products::parse("CLI"), Some(Products::Cli));
+        assert_eq!(Products::parse("both"), Some(Products::BOTH));
+        assert_eq!(Products::parse("CLI"), Some(Products::CLI));
         assert_eq!(Products::parse("everything"), None);
         assert_eq!(Format::parse("AppImage"), Some(Format::AppImage));
         assert_eq!(Format::parse("arch"), Some(Format::Arch));
@@ -1551,7 +1689,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
     #[test]
     fn both_products_on_windows_are_the_msi_and_the_cli_on_the_path() {
         let options = Options {
-            products: Products::Both,
+            products: Products::BOTH,
             ..Options::default()
         };
         let plan = plan(&found(windows(), ON_WINDOWS), options).expect("should plan");
@@ -1574,7 +1712,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
         let mut found = found_on_a_mac(Arch::Aarch64, WITH_MACS);
         found.places.leave_path = true;
         let options = Options {
-            products: Products::Cli,
+            products: Products::CLI,
             ..Options::default()
         };
         let plan = plan(&found, options).expect("should plan");
@@ -1589,13 +1727,375 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
     }
 
     #[test]
-    fn the_windows_choice_is_one_of_three_or_nothing() {
-        assert_eq!(Products::from_choice(true, false), Some(Products::Desktop));
-        assert_eq!(Products::from_choice(false, true), Some(Products::Cli));
-        assert_eq!(Products::from_choice(true, true), Some(Products::Both));
-        assert_eq!(Products::from_choice(false, false), None);
-        assert!(Products::Both.includes(Product::Cli));
-        assert!(!Products::Desktop.includes(Product::Cli));
+    fn the_windows_choice_is_any_of_the_three_but_none() {
+        assert_eq!(
+            Products::from_choice(true, false, false),
+            Some(Products::DESKTOP)
+        );
+        assert_eq!(
+            Products::from_choice(false, true, false),
+            Some(Products::CLI)
+        );
+        assert_eq!(
+            Products::from_choice(true, true, false),
+            Some(Products::BOTH)
+        );
+        assert_eq!(
+            Products::from_choice(false, false, true),
+            Some(Products::STATS)
+        );
+        assert_eq!(Products::from_choice(true, true, true), Some(Products::ALL));
+        assert_eq!(Products::from_choice(false, false, false), None);
+        assert!(Products::BOTH.includes(Product::Cli));
+        assert!(!Products::BOTH.includes(Product::Stats));
+        assert!(!Products::DESKTOP.includes(Product::Cli));
+        assert_eq!(
+            Products::ALL.each(),
+            vec![Product::Desktop, Product::Cli, Product::Stats],
+            "always in the same order, whatever order they were asked for in"
+        );
+        assert_eq!(Products::default(), Products::DESKTOP);
+    }
+
+    /// `both` is still Noctorium and the CLI, as it was in every script written before Stats.
+    #[test]
+    fn the_products_are_read_one_at_a_time_or_several_together() {
+        assert_eq!(Products::parse("stats"), Some(Products::STATS));
+        assert_eq!(Products::parse("both"), Some(Products::BOTH));
+        assert_eq!(Products::parse("all"), Some(Products::ALL));
+        assert_eq!(
+            Products::parse("desktop,stats"),
+            Some(Products {
+                desktop: true,
+                cli: false,
+                stats: true
+            })
+        );
+        assert_eq!(
+            Products::parse("Stats+CLI"),
+            Some(Products {
+                desktop: false,
+                cli: true,
+                stats: true
+            })
+        );
+        assert_eq!(Products::parse("both,stats"), Some(Products::ALL));
+        assert_eq!(
+            Products::parse("stats, desktop"),
+            Products::parse("desktop,stats")
+        );
+        assert_eq!(Products::parse(""), None);
+        assert_eq!(
+            Products::parse("desktop,"),
+            None,
+            "an empty word is not a product"
+        );
+        assert_eq!(Products::parse("desktop,player"), None);
+    }
+
+    // ------------------------------------------------------------ Noctorium Stats
+
+    const STATS_SUMS: &str = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-stats-0.7.0-windows-x64.zip
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  noctorium-stats-0.7.0-linux-x64.tar.gz
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  noctorium-stats-0.7.0-macos-arm64.zip
+dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd  noctorium-stats-0.7.0-macos-x64.zip
+eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  Noctorium-Stats-0.7.0.apk
+";
+
+    /// Everything a release with Stats carries, around the files these tests look for.
+    const WITH_STATS: &[&str] = &[
+        "Noctorium-0.7.0-windows-x64.msi",
+        "noctorium-cli-0.7.0-windows-x64.zip",
+        "noctorium_0.7.0_amd64.deb",
+        "Noctorium-0.7.0-x86_64.AppImage",
+        "noctorium-cli-0.7.0-linux-x64.tar.gz",
+        "Noctorium-0.7.0-macos-arm64.dmg",
+        "Noctorium-0.7.0-macos-x64.dmg",
+        "noctorium-cli-0.7.0-macos-arm64.tar.gz",
+        "noctorium-stats-0.7.0-windows-x64.zip",
+        "noctorium-stats-0.7.0-linux-x64.tar.gz",
+        "noctorium-stats-0.7.0-macos-arm64.zip",
+        "noctorium-stats-0.7.0-macos-x64.zip",
+        "Noctorium-Stats-0.7.0.apk",
+        "SHA256SUMS.txt",
+    ];
+
+    fn with_stats(found: Found) -> Found {
+        Found {
+            release: release(WITH_STATS),
+            checksums: Some(format!("{SUMS}{STATS_SUMS}")),
+            ..found
+        }
+    }
+
+    fn only(products: Products) -> Options {
+        Options {
+            products,
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn windows_unpacks_stats_beside_the_cli_and_gives_it_a_shortcut_and_an_uninstaller() {
+        let mut found = with_stats(found(windows(), ON_WINDOWS));
+        found.places.start_menu =
+            Some(r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs".into());
+        let plan = plan(&found, only(Products::STATS)).expect("should plan");
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.product, Product::Stats);
+        assert_eq!(item.method, Method::StatsWindows);
+        assert_eq!(item.asset.name, "noctorium-stats-0.7.0-windows-x64.zip");
+        assert_eq!(item.published, "a".repeat(64));
+        assert_eq!(item.escalation, None);
+        let folder = PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs").join("Noctorium Stats");
+        let shortcut =
+            PathBuf::from(r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs")
+                .join("Noctorium Stats.lnk");
+        assert_eq!(
+            item.actions,
+            vec![
+                Action::UnpackStats {
+                    archive: download_folder().join("noctorium-stats-0.7.0-windows-x64.zip"),
+                    into: folder.clone(),
+                    link: None,
+                },
+                Action::StartMenuShortcut {
+                    folder: folder.clone(),
+                    shortcut: shortcut.clone(),
+                },
+                Action::ListInstalled {
+                    folder,
+                    shortcut,
+                    version: "0.7.0".into(),
+                },
+            ]
+        );
+        assert!(item.start.contains("Start menu"), "{}", item.start);
+        assert!(
+            plan.notes.is_empty(),
+            "nothing about the .msi for Stats alone: {:?}",
+            plan.notes
+        );
+
+        // A trial install leaves Windows' list of programs alone, as it does the PATH.
+        found.places.leave_path = true;
+        let plan = super::plan(&found, only(Products::STATS)).expect("should plan");
+        assert!(
+            !plan.items[0]
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::ListInstalled { .. })),
+            "{:?}",
+            plan.items[0].actions
+        );
+    }
+
+    #[test]
+    fn all_three_on_windows_are_planned_in_order_and_downloaded_together() {
+        let mut found = with_stats(found(windows(), ON_WINDOWS));
+        found.places.start_menu = Some(r"C:\Start".into());
+        let plan = plan(&found, only(Products::ALL)).expect("should plan");
+        let methods: Vec<Method> = plan.items.iter().map(|i| i.method).collect();
+        assert_eq!(
+            methods,
+            vec![Method::WindowsMsi, Method::CliWindows, Method::StatsWindows]
+        );
+        assert!((plan.megabytes() - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn linux_unpacks_stats_links_it_and_puts_it_in_the_menu() {
+        let found = with_stats(found(
+            linux(Some(Family::Debian), Some(PackageManager::Apt)),
+            ALL,
+        ));
+        let plan = plan(&found, only(Products::STATS)).expect("should plan");
+        let item = &plan.items[0];
+        assert_eq!(item.method, Method::StatsLinux);
+        assert_eq!(item.asset.name, "noctorium-stats-0.7.0-linux-x64.tar.gz");
+        assert_eq!(item.published, "b".repeat(64));
+        assert_eq!(
+            item.actions,
+            vec![
+                Action::UnpackStats {
+                    archive: download_folder().join("noctorium-stats-0.7.0-linux-x64.tar.gz"),
+                    into: PathBuf::from("/home/sam/.local/share/noctorium-stats"),
+                    link: Some(PathBuf::from("/home/sam/.local/bin/noctorium-stats")),
+                },
+                Action::MenuEntry {
+                    folder: PathBuf::from("/home/sam/.local/share/noctorium-stats"),
+                    entry: PathBuf::from(
+                        "/home/sam/.local/share/applications/noctorium-stats.desktop"
+                    ),
+                    icons: PathBuf::from("/home/sam/.local/share/icons/hicolor"),
+                },
+            ]
+        );
+        // The PATH the tests run with never has /home/sam/.local/bin on it.
+        assert!(
+            plan.notes.iter().any(|n| n.contains("`noctorium-stats`")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(
+            item.start.contains("~/.local/bin/noctorium-stats"),
+            "{}",
+            item.start
+        );
+        assert!(!plan.needs_password(), "Stats is for this user alone");
+
+        // With the CLI beside it, ~/.local/bin is said once, by the CLI's note.
+        let plan = super::plan(&found, only(Products::CLI.with(Products::STATS))).unwrap();
+        let about_the_path = plan
+            .notes
+            .iter()
+            .filter(|n| n.contains("~/.local/bin is not on your PATH"))
+            .count();
+        assert_eq!(about_the_path, 1, "{:?}", plan.notes);
+    }
+
+    #[test]
+    fn each_kind_of_mac_copies_its_own_stats_into_applications() {
+        for (arch, zip, published) in [
+            (Arch::Aarch64, "noctorium-stats-0.7.0-macos-arm64.zip", "c"),
+            (Arch::X86_64, "noctorium-stats-0.7.0-macos-x64.zip", "d"),
+        ] {
+            let found = with_stats(found_on_a_mac(arch, WITH_MACS));
+            let plan = plan(&found, only(Products::DESKTOP.with(Products::STATS))).unwrap();
+            let methods: Vec<Method> = plan.items.iter().map(|i| i.method).collect();
+            assert_eq!(methods, vec![Method::MacDiskImage, Method::StatsMac]);
+            let item = &plan.items[1];
+            assert_eq!(item.asset.name, zip, "{arch:?}");
+            assert_eq!(item.published, published.repeat(64));
+            assert_eq!(
+                item.actions,
+                vec![Action::PlaceZippedApp {
+                    archive: download_folder().join(zip),
+                    into: PathBuf::from("/Applications"),
+                    app: "Noctorium Stats.app".into(),
+                }]
+            );
+            assert!(item.start.contains("Noctorium Stats.app"), "{}", item.start);
+            assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+        }
+    }
+
+    #[test]
+    fn a_mac_that_cannot_write_to_applications_says_where_stats_went() {
+        let mut found = with_stats(found_on_a_mac(Arch::Aarch64, WITH_MACS));
+        found.places.applications = Some("/Users/sam/Applications".into());
+        let plan = plan(&found, only(Products::STATS)).unwrap();
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("so Noctorium Stats goes into")),
+            "{:?}",
+            plan.notes
+        );
+    }
+
+    /// 0.12.2 as it was published: everything but Stats. What the one-line scripts meet the day they go
+    /// live, and what any installer meets when it is pointed at a release from before Stats.
+    const AS_0_12_2: &[&str] = &[
+        "noctorium-0.7.0-1-x86_64.pkg.tar.zst",
+        "Noctorium-0.7.0-macos-arm64.dmg",
+        "Noctorium-0.7.0-macos-x64.dmg",
+        "Noctorium-0.7.0-windows-x64-setup.exe",
+        "Noctorium-0.7.0-windows-x64.msi",
+        "Noctorium-0.7.0-x86_64.AppImage",
+        "Noctorium-0.7.0-x86_64.flatpak",
+        "Noctorium-0.7.0.apk",
+        "noctorium-0.7.0.x86_64.rpm",
+        "noctorium-cli-0.7.0-linux-x64.tar.gz",
+        "noctorium-cli-0.7.0-macos-arm64.tar.gz",
+        "noctorium-cli-0.7.0-macos-x64.tar.gz",
+        "noctorium-cli-0.7.0-windows-x64.zip",
+        "Noctorium-Installer-android.apk",
+        "noctorium-installer-cli-linux-x64",
+        "noctorium-installer-cli-macos",
+        "noctorium-installer-cli-windows-x64.exe",
+        "noctorium-installer-linux-x64",
+        "Noctorium-Installer-windows-x64.exe",
+        "Noctorium-Installer-x86_64.AppImage",
+        "noctorium_0.7.0_amd64.deb",
+        "SHA256SUMS.txt",
+    ];
+
+    /// Stats asked for of a release without it is left out, said so, and nothing is downloaded for it --
+    /// and whatever else was asked for is planned exactly as it would have been without it.
+    #[test]
+    fn a_release_from_before_stats_leaves_it_out_and_installs_the_rest() {
+        for (found, rest) in [
+            (
+                found(windows(), AS_0_12_2),
+                vec![Method::WindowsMsi, Method::CliWindows],
+            ),
+            (
+                found(
+                    linux(Some(Family::Debian), Some(PackageManager::Apt)),
+                    AS_0_12_2,
+                ),
+                vec![Method::Apt, Method::CliLinux],
+            ),
+            (
+                found_on_a_mac(Arch::X86_64, AS_0_12_2),
+                vec![Method::MacDiskImage, Method::CliMac],
+            ),
+        ] {
+            assert_eq!(stats_asset(&found), None);
+
+            let alone = plan(&found, only(Products::STATS)).expect("not a failure");
+            assert!(alone.items.is_empty(), "{:?}", alone.items);
+            assert_eq!(alone.megabytes(), 0.0, "nothing downloaded for it");
+            let said = alone.notes.join("\n");
+            assert!(
+                said.contains("Noctorium Stats is not in v0.7.0 yet"),
+                "{said}"
+            );
+            assert!(said.contains("noctorium-stats-<version>-"), "{said}");
+
+            let everything = plan(&found, only(Products::ALL)).expect("the rest is planned");
+            let methods: Vec<Method> = everything.items.iter().map(|i| i.method).collect();
+            assert_eq!(methods, rest);
+            assert!(everything
+                .notes
+                .iter()
+                .any(|n| n.contains("Noctorium Stats is not in")));
+            let without = plan(&found, only(Products::BOTH)).unwrap();
+            assert_eq!(
+                everything.items.len(),
+                without.items.len(),
+                "the same plan as if Stats had never been asked for"
+            );
+            assert!(!without.notes.iter().any(|n| n.contains("Stats")));
+        }
+    }
+
+    #[test]
+    fn stats_without_its_checksum_is_refused() {
+        let mut found = with_stats(found(linux(None, None), ALL));
+        found.checksums = Some(SUMS.into());
+        assert!(matches!(
+            plan(&found, only(Products::STATS)),
+            Err(Problem::Missing(why)) if why.contains("noctorium-stats-0.7.0-linux-x64.tar.gz")
+        ));
+    }
+
+    #[test]
+    fn the_stats_file_for_this_machine_is_found_for_the_menus() {
+        let on_windows = with_stats(found(windows(), ON_WINDOWS));
+        assert_eq!(
+            stats_asset(&on_windows).map(|a| a.name.as_str()),
+            Some("noctorium-stats-0.7.0-windows-x64.zip")
+        );
+        let mac = with_stats(found_on_a_mac(Arch::Aarch64, WITH_MACS));
+        assert_eq!(
+            stats_asset(&mac).map(|a| a.name.as_str()),
+            Some("noctorium-stats-0.7.0-macos-arm64.zip")
+        );
+        assert_eq!(stats_asset(&found(windows(), ON_WINDOWS)), None);
     }
 
     #[test]

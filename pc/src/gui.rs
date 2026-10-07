@@ -35,7 +35,7 @@ const ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1A, 0x14, 0x25);
 
 /// The window's size. Taller on Linux, which has a row for choosing the format; the content scrolls if a
 /// release ever has more to say than fits.
-const SIZE: [f32; 2] = [470.0, if cfg!(windows) { 470.0 } else { 520.0 }];
+const SIZE: [f32; 2] = [470.0, if cfg!(windows) { 500.0 } else { 550.0 }];
 
 /// Opens the window and returns whether everything that was chosen ended up installed.
 ///
@@ -96,6 +96,7 @@ enum Stage {
 struct Wanted {
     desktop: bool,
     cli: bool,
+    stats: bool,
     /// The .msi's own wizard, for choosing the folder. Windows only.
     wizard: bool,
 }
@@ -105,8 +106,15 @@ impl Default for Wanted {
         Wanted {
             desktop: true,
             cli: false,
+            stats: false,
             wizard: false,
         }
+    }
+}
+
+impl Wanted {
+    fn products(&self) -> Option<Products> {
+        Products::from_choice(self.desktop, self.cli, self.stats)
     }
 }
 
@@ -123,6 +131,8 @@ struct Choosing {
     wanted: Wanted,
     /// The Noctorium CLI's download, or nothing when this release has none for this machine.
     cli_size: Option<u64>,
+    /// Noctorium Stats' download, or nothing when this release has none for this machine.
+    stats_size: Option<u64>,
     plan: Result<Plan, String>,
 }
 
@@ -131,15 +141,18 @@ impl Choosing {
         let offers = flow::offers(&found);
         let chosen = offers.iter().position(|o| o.recommended).unwrap_or(0);
         let cli_size = flow::cli_asset(&found).map(|a| a.size);
+        let stats_size = flow::stats_asset(&found).map(|a| a.size);
         let mut choosing = Choosing {
             found,
             offers,
             chosen,
             wanted: Wanted {
                 cli: wanted.cli && cli_size.is_some(),
+                stats: wanted.stats && stats_size.is_some(),
                 ..wanted
             },
             cli_size,
+            stats_size,
             plan: Err(String::new()),
         };
         choosing.replan();
@@ -147,8 +160,11 @@ impl Choosing {
     }
 
     fn replan(&mut self) {
-        let Some(products) = Products::from_choice(self.wanted.desktop, self.wanted.cli) else {
-            self.plan = Err("Choose Noctorium, the Noctorium CLI, or both.".into());
+        let Some(products) = self.wanted.products() else {
+            self.plan = Err(
+                "Choose Noctorium, the Noctorium CLI or Noctorium Stats -- or more than one."
+                    .into(),
+            );
             return;
         };
         // The recommended one is what auto picks, and is asked for as auto, so it is decided in one
@@ -403,6 +419,7 @@ impl Gui {
                 };
                 self.wanted.desktop = failed(Product::Desktop);
                 self.wanted.cli = failed(Product::Cli);
+                self.wanted.stats = failed(Product::Stats);
             }
             self.look(ctx);
         }
@@ -458,27 +475,42 @@ fn ready(
     let summary = match &choosing.plan {
         Ok(plan) if plan.megabytes_to_download() < 0.5 => "Downloaded already".to_string(),
         Ok(plan) if plan.items.len() > 1 => format!(
-            "{:.0} MB to download, both at once",
-            plan.megabytes_to_download()
+            "{:.0} MB to download, {} at once",
+            plan.megabytes_to_download(),
+            if plan.items.len() == 2 {
+                "both"
+            } else {
+                "all three"
+            }
         ),
         Ok(plan) => format!("{:.0} MB to download", plan.megabytes_to_download()),
-        Err(_) if !wanted.desktop && !wanted.cli => "Nothing chosen yet".to_string(),
+        Err(_) if wanted.products().is_none() => "Nothing chosen yet".to_string(),
         Err(_) => {
             let desktop = choosing.desktop_size().filter(|_| wanted.desktop);
             let cli = choosing.cli_size.filter(|_| wanted.cli);
+            let stats = choosing.stats_size.filter(|_| wanted.stats);
             format!(
                 "{} to download",
-                megabytes(desktop.unwrap_or(0) + cli.unwrap_or(0))
+                megabytes(desktop.unwrap_or(0) + cli.unwrap_or(0) + stats.unwrap_or(0))
             )
         }
     };
     ui.label(egui::RichText::new(summary).size(13.0).color(SUBTEXT));
     ui.add_space(12.0);
 
-    // A box for each, rather than a list of three with "both" in it: the two are separate programs, and
-    // which of them is wanted is two questions of yes or no. Each says what it is and how big, in the
-    // label itself, so a screen reader says it all with the box.
-    let missing = format!("Not in {} yet.", choosing.found.release.tag);
+    // A box for each, rather than a list of every combination: they are separate programs, and which of
+    // them is wanted is three questions of yes or no. Each says what it is and how big, in the label
+    // itself, so a screen reader says it all with the box.
+    // What a product this release does not carry says instead of its size, in the label itself rather
+    // than only when the pointer is over it: a box that cannot be ticked and does not say why looks
+    // broken. Noctorium Stats is the one this is for, against a release from before it.
+    let tag = &choosing.found.release.tag;
+    let missing = format!("Not in {tag} yet.");
+    let or_missing = |what: &str, size: Option<u64>| match size {
+        Some(_) => what.to_string(),
+        // In place of what it is, which a box that cannot be ticked has less need to say.
+        None => format!("not in {tag} yet"),
+    };
     ui.allocate_ui_with_layout(
         egui::vec2(330.0, 0.0),
         egui::Layout::top_down(egui::Align::Min),
@@ -494,14 +526,26 @@ fn ready(
             let cli = product_label(
                 ui,
                 "Noctorium CLI",
-                "the same player, in a terminal",
+                &or_missing("the same player, in a terminal", choosing.cli_size),
                 choosing.cli_size,
             );
             ui.add_enabled(
                 choosing.cli_size.is_some(),
                 egui::Checkbox::new(&mut wanted.cli, cli),
             )
-            .on_disabled_hover_text(missing);
+            .on_disabled_hover_text(missing.as_str());
+            ui.add_space(4.0);
+            let stats = product_label(
+                ui,
+                "Noctorium Stats",
+                &or_missing("your listening, in figures", choosing.stats_size),
+                choosing.stats_size,
+            );
+            ui.add_enabled(
+                choosing.stats_size.is_some(),
+                egui::Checkbox::new(&mut wanted.stats, stats),
+            )
+            .on_disabled_hover_text(missing.as_str());
         },
     );
 
@@ -556,10 +600,12 @@ fn ready(
 
     ui.add_space(16.0);
     let ready = choosing.plan.as_ref().ok();
-    let label = match Products::from_choice(wanted.desktop, wanted.cli) {
-        Some(Products::Both) => "Install both",
-        Some(Products::Cli) => "Install Noctorium CLI",
-        Some(Products::Desktop) => "Install Noctorium",
+    let label = match wanted.products() {
+        Some(products) if products.count() == 3 => "Install all three",
+        Some(products) if products.count() == 2 => "Install both",
+        Some(Products::CLI) => "Install Noctorium CLI",
+        Some(Products::STATS) => "Install Noctorium Stats",
+        Some(_) => "Install Noctorium",
         None => "Install",
     };
     let button = accent_button(label, 16.0, egui::vec2(230.0, 40.0));
@@ -670,7 +716,9 @@ fn progress(ui: &mut egui::Ui, working: &Working) {
                 Some(Action::Run { .. }) if item.method == Method::WindowsSetup => {
                     "The Noctorium setup takes over from here."
                 }
-                Some(Action::UnpackCli { .. }) => "Unpacking it into a folder of its own.",
+                Some(Action::UnpackCli { .. } | Action::UnpackStats { .. }) => {
+                    "Unpacking it into a folder of its own."
+                }
                 _ => "",
             }
         };
@@ -735,7 +783,8 @@ fn ended(ui: &mut egui::Ui, working: &Working, retry: &mut bool, close: &mut boo
         .collect();
     let title = match (installed.len(), working.rows.len()) {
         (1, 1) => format!("{} is installed.", working.plan.items[0].product.name()),
-        (all, count) if all == count => "Both are installed.".to_string(),
+        (2, 2) => "Both are installed.".to_string(),
+        (all, count) if all == count => "All three are installed.".to_string(),
         (0, _) => "That did not work.".to_string(),
         _ => "That did not all work.".to_string(),
     };

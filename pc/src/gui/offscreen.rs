@@ -250,27 +250,38 @@ const SUMS: &str = "\
 5555555555555555555555555555555555555555555555555555555555555555  Noctorium-0.9.1-x86_64.AppImage
 6666666666666666666666666666666666666666666666666666666666666666  noctorium-cli-0.9.1-linux-x64.tar.gz
 7777777777777777777777777777777777777777777777777777777777777777  Noctorium-0.9.1-x86_64.flatpak
+8888888888888888888888888888888888888888888888888888888888888888  noctorium-stats-0.9.1-windows-x64.zip
+9999999999999999999999999999999999999999999999999999999999999999  noctorium-stats-0.9.1-linux-x64.tar.gz
 ";
 
-/// v0.9.1 as it was published, sizes and all, but at addresses that go nowhere.
-fn release() -> Release {
+/// v0.9.1 as it was published, sizes and all, but at addresses that go nowhere -- and, when [stats] says
+/// so, with Noctorium Stats beside it, as a release from 0.13 on would have it.
+fn release(stats: bool) -> Release {
     let asset = |name: &str, size: u64| Asset {
         name: name.into(),
         url: format!("https://example.test/{name}"),
         size,
     };
+    let mut assets = vec![
+        asset("Noctorium-0.9.1-windows-x64.msi", 343_048_105),
+        asset("Noctorium-0.9.1-windows-x64-setup.exe", 343_778_304),
+        asset("noctorium-cli-0.9.1-windows-x64.zip", 62_723_902),
+        asset("noctorium_0.9.1_amd64.deb", 254_526_766),
+        asset("Noctorium-0.9.1-x86_64.AppImage", 264_321_528),
+        asset("noctorium-cli-0.9.1-linux-x64.tar.gz", 66_452_296),
+        asset("Noctorium-0.9.1-x86_64.flatpak", 251_243_192),
+        asset("SHA256SUMS.txt", 2078),
+    ];
+    if stats {
+        assets.extend([
+            asset("noctorium-stats-0.9.1-windows-x64.zip", 6_712_000),
+            asset("noctorium-stats-0.9.1-linux-x64.tar.gz", 7_654_000),
+            asset("Noctorium-Stats-0.9.1.apk", 21_000_000),
+        ]);
+    }
     Release {
         tag: "v0.9.1".into(),
-        assets: vec![
-            asset("Noctorium-0.9.1-windows-x64.msi", 343_048_105),
-            asset("Noctorium-0.9.1-windows-x64-setup.exe", 343_778_304),
-            asset("noctorium-cli-0.9.1-windows-x64.zip", 62_723_902),
-            asset("noctorium_0.9.1_amd64.deb", 254_526_766),
-            asset("Noctorium-0.9.1-x86_64.AppImage", 264_321_528),
-            asset("noctorium-cli-0.9.1-linux-x64.tar.gz", 66_452_296),
-            asset("Noctorium-0.9.1-x86_64.flatpak", 251_243_192),
-            asset("SHA256SUMS.txt", 2078),
-        ],
+        assets,
     }
 }
 
@@ -294,8 +305,13 @@ fn system(os: Os) -> System {
 }
 
 fn found(os: Os) -> Found {
+    found_with(os, true)
+}
+
+/// As [found], with Noctorium Stats in the release or not.
+fn found_with(os: Os, stats: bool) -> Found {
     Found {
-        release: release(),
+        release: release(stats),
         checksums: Some(SUMS.into()),
         latest: true,
         system: system(os),
@@ -307,6 +323,9 @@ fn found(os: Os) -> Found {
             })),
             data: Some("/home/sam/.local/share".into()),
             programs: Some(r"C:\Users\Sam\AppData\Local\Programs".into()),
+            start_menu: Some(
+                r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs".into(),
+            ),
             installed: (os == Os::Windows).then(|| PathBuf::from(r"C:\Program Files\Noctorium\")),
             ..Places::default()
         },
@@ -323,7 +342,11 @@ fn gui_at(ctx: &egui::Context, stage: impl FnOnce(&Gui) -> Stage) -> Gui {
 /// Choosing, as it would be on a machine that has downloaded nothing yet -- whatever this one's temporary
 /// folder happens to hold.
 fn choosing(os: Os, wanted: Wanted) -> Stage {
-    let mut choosing = Choosing::new(found(os), wanted);
+    choosing_from(found(os), wanted)
+}
+
+fn choosing_from(found: Found, wanted: Wanted) -> Stage {
+    let mut choosing = Choosing::new(found, wanted);
     if let Ok(plan) = &mut choosing.plan {
         for item in &mut plan.items {
             item.on_disk = OnDisk::Nothing;
@@ -334,10 +357,10 @@ fn choosing(os: Os, wanted: Wanted) -> Stage {
 
 fn working(rows: Vec<Row>, finished: bool, wizard: bool) -> Stage {
     let options = Options {
-        products: if rows.len() > 1 {
-            Products::Both
-        } else {
-            Products::Desktop
+        products: match rows.len() {
+            3 => Products::ALL,
+            2 => Products::BOTH,
+            _ => Products::DESKTOP,
         },
         wizard,
         ..Options::default()
@@ -369,6 +392,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                     Wanted {
                         desktop: true,
                         cli: true,
+                        stats: false,
                         wizard: true,
                     },
                 )
@@ -382,6 +406,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                     Wanted {
                         desktop: false,
                         cli: true,
+                        stats: false,
                         wizard: false,
                     },
                 )
@@ -395,6 +420,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                     Wanted {
                         desktop: false,
                         cli: false,
+                        stats: false,
                         wizard: false,
                     },
                 )
@@ -408,6 +434,49 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                     Wanted {
                         desktop: true,
                         cli: true,
+                        stats: false,
+                        wizard: false,
+                    },
+                )
+            }),
+        ),
+        (
+            "06b-ready-windows-all-three",
+            Box::new(|| {
+                choosing(
+                    Os::Windows,
+                    Wanted {
+                        desktop: true,
+                        cli: true,
+                        stats: true,
+                        wizard: false,
+                    },
+                )
+            }),
+        ),
+        (
+            "06c-ready-linux-stats-only",
+            Box::new(|| {
+                choosing(
+                    Os::Linux,
+                    Wanted {
+                        desktop: false,
+                        cli: false,
+                        stats: true,
+                        wizard: false,
+                    },
+                )
+            }),
+        ),
+        (
+            "06d-ready-windows-before-stats",
+            Box::new(|| {
+                choosing_from(
+                    found_with(Os::Windows, false),
+                    Wanted {
+                        desktop: true,
+                        cli: false,
+                        stats: true,
                         wizard: false,
                     },
                 )
@@ -449,6 +518,23 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
             }),
         ),
         (
+            "08b-all-three-stats-installing",
+            Box::new(move || {
+                working(
+                    vec![
+                        Row::Downloading {
+                            done: mb(201),
+                            total: 343_048_105,
+                        },
+                        Row::Checked(Fetched::Downloaded),
+                        Row::Installing,
+                    ],
+                    false,
+                    false,
+                )
+            }),
+        ),
+        (
             "09-installing-noctorium",
             Box::new(|| working(vec![Row::Installing, Row::Installed(None)], false, false)),
         ),
@@ -457,6 +543,20 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
             Box::new(|| {
                 working(
                     vec![Row::Installed(None), Row::Installed(None)],
+                    true,
+                    false,
+                )
+            }),
+        ),
+        (
+            "10b-all-three-installed",
+            Box::new(|| {
+                working(
+                    vec![
+                        Row::Installed(None),
+                        Row::Installed(None),
+                        Row::Installed(None),
+                    ],
                     true,
                     false,
                 )
@@ -506,9 +606,9 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
 fn draw(name: &str, stage: &dyn Fn() -> Stage, paint: bool) -> Picture {
     let mut gui: Option<Gui> = None;
     let size = if name.contains("linux") {
-        egui::vec2(470.0, 520.0)
+        egui::vec2(470.0, 550.0)
     } else {
-        egui::vec2(SIZE[0], 470.0)
+        egui::vec2(SIZE[0], 500.0)
     };
     render(size, 1.5, paint, |ctx| {
         let gui = gui.get_or_insert_with(|| gui_at(ctx, |_| stage()));
@@ -542,13 +642,13 @@ fn every_stage_lays_out() {
     }
 }
 
-/// The choice, as somebody who cannot see it is told of it: two boxes, each saying what it is and how
-/// big, Noctorium ticked to begin with -- and on Windows a third, for the folder, not ticked.
+/// The choice, as somebody who cannot see it is told of it: three boxes, each saying what it is and how
+/// big, Noctorium ticked to begin with -- and on Windows a fourth, for the folder, not ticked.
 #[test]
 fn the_choice_of_products_is_told_to_a_screen_reader_whole() {
     let picture = draw("ready", &|| choosing(Os::Windows, Wanted::default()), false);
     let boxes = picture.checkboxes();
-    assert_eq!(boxes.len(), 3, "{boxes:?}");
+    assert_eq!(boxes.len(), 4, "{boxes:?}");
     // Found by what they say, since the tree is not handed over in the order it is drawn.
     let find = |test: &dyn Fn(&str) -> bool| {
         boxes
@@ -557,8 +657,11 @@ fn the_choice_of_products_is_told_to_a_screen_reader_whole() {
             .unwrap_or_else(|| panic!("{boxes:?}"))
             .clone()
     };
-    let (desktop, ticked, enabled) =
-        find(&|label| label.starts_with("Noctorium ") && !label.starts_with("Noctorium CLI"));
+    let (desktop, ticked, enabled) = find(&|label| {
+        label.starts_with("Noctorium ")
+            && !label.starts_with("Noctorium CLI")
+            && !label.starts_with("Noctorium Stats")
+    });
     assert!(
         desktop.contains("the music player") && desktop.contains("327 MB"),
         "{desktop}"
@@ -566,6 +669,12 @@ fn the_choice_of_products_is_told_to_a_screen_reader_whole() {
     assert!(ticked && enabled);
     let (cli, ticked, enabled) = find(&|label| label.starts_with("Noctorium CLI"));
     assert!(cli.contains("60 MB"), "{cli}");
+    assert!(!ticked && enabled);
+    let (stats, ticked, enabled) = find(&|label| label.starts_with("Noctorium Stats"));
+    assert!(
+        stats.contains("your listening") && stats.contains("6 MB"),
+        "{stats}"
+    );
     assert!(!ticked && enabled);
     let (_, ticked, _) = find(&|label| label.contains("Choose the folder"));
     assert!(!ticked);
@@ -578,6 +687,7 @@ fn both_chosen_says_both_and_their_size_together() {
     let both = Wanted {
         desktop: true,
         cli: true,
+        stats: false,
         wizard: false,
     };
     let picture = draw("both", &|| choosing(Os::Windows, both), false);
@@ -587,12 +697,84 @@ fn both_chosen_says_both_and_their_size_together() {
     let none = Wanted {
         desktop: false,
         cli: false,
+        stats: false,
         wizard: false,
     };
     let picture = draw("none", &|| choosing(Os::Windows, none), false);
-    assert!(picture.says("Choose Noctorium, the Noctorium CLI, or both."));
+    assert!(
+        picture.says("Choose Noctorium, the Noctorium CLI or Noctorium Stats -- or more than one.")
+    );
     // Nothing to choose the folder of.
-    assert_eq!(picture.checkboxes().len(), 2);
+    assert_eq!(picture.checkboxes().len(), 3);
+
+    let all = Wanted {
+        desktop: true,
+        cli: true,
+        stats: true,
+        wizard: false,
+    };
+    let picture = draw("all", &|| choosing(Os::Windows, all), false);
+    assert!(picture.says("Install all three"));
+    assert!(picture.says("393 MB to download, all three at once"));
+
+    let picture = draw(
+        "stats",
+        &|| {
+            choosing(
+                Os::Linux,
+                Wanted {
+                    desktop: false,
+                    ..all
+                },
+            )
+        },
+        false,
+    );
+    assert!(picture.says("Install both"));
+    let picture = draw(
+        "stats-alone",
+        &|| {
+            choosing(
+                Os::Linux,
+                Wanted {
+                    desktop: false,
+                    cli: false,
+                    ..all
+                },
+            )
+        },
+        false,
+    );
+    assert!(picture.says("Install Noctorium Stats"));
+    assert!(picture.says("7 MB to download"));
+}
+
+/// A release from before Noctorium Stats -- every release the window can meet until one carries it, and
+/// any it meets afterwards that is older: its box is there, cannot be ticked, and says why in words, and
+/// asking for it anyway, as a retry after a failure would, leaves it out rather than failing the rest.
+#[test]
+fn a_release_without_stats_says_so_and_installs_the_rest() {
+    let wanted = Wanted {
+        desktop: true,
+        cli: false,
+        stats: true,
+        wizard: false,
+    };
+    let picture = draw(
+        "before-stats",
+        &|| choosing_from(found_with(Os::Windows, false), wanted),
+        false,
+    );
+    let boxes = picture.checkboxes();
+    let (stats, ticked, enabled) = boxes
+        .iter()
+        .find(|(label, _, _)| label.starts_with("Noctorium Stats"))
+        .cloned()
+        .unwrap_or_else(|| panic!("{boxes:?}"));
+    assert!(stats.contains("not in v0.9.1 yet"), "{stats}");
+    assert!(!ticked && !enabled, "{boxes:?}");
+    assert!(picture.says("Install Noctorium"));
+    assert!(picture.says("327 MB to download"));
 }
 
 #[test]
@@ -611,6 +793,25 @@ fn each_product_says_how_it_ended_and_how_to_start_it() {
     assert!(picture.says("Both are installed."));
     assert!(picture.says("Start it from the Start menu"));
     assert!(picture.says("Open a new terminal"));
+
+    let picture = draw(
+        "all-done",
+        &|| {
+            working(
+                vec![
+                    Row::Installed(None),
+                    Row::Installed(None),
+                    Row::Installed(None),
+                ],
+                true,
+                false,
+            )
+        },
+        false,
+    );
+    assert!(picture.says("All three are installed."));
+    assert!(picture.says("Noctorium Stats is installed."));
+    assert!(picture.says("where it is Noctorium Stats"));
 
     let picture = draw(
         "partly",
