@@ -45,10 +45,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: windows
+          - platform: windows-x64
             runner: windows-latest
             archive: windows-x64.zip
-          - platform: linux
+          - platform: linux-x64
             runner: ubuntu-latest
             archive: linux-x64.tar.gz
           # Built natively on each kind of Mac, as Noctorium is: macos-15-intel is GitHub's last Intel
@@ -86,14 +86,15 @@ jobs:
       - name: Tests
         run: cargo test
 
-      # ---- As Noctorium-Stats-Desktop's README says: the version from the tag in NOCTORIUM_VERSION, read
-      # at build time, then its packaging script for this platform, which leaves the one file in dist/.
+      # ---- As Noctorium-Stats-Desktop's packaging/package.sh says: given the version and the platform --
+      # windows-x64, linux-x64, macos-arm64 or macos-x64, the names this matrix uses -- it builds the
+      # program itself, with NOCTORIUM_VERSION set from the version and --locked, runs it with --version
+      # where it can, and leaves the one file in dist/. (The agreed shape was a cargo build here first, with
+      # the platform as windows or linux; the script as written builds for itself and names them in full.)
       - name: Build and package
         run: |
           set -euo pipefail
-          version="${VERSION#v}"
-          NOCTORIUM_VERSION="$version" cargo build --release
-          bash packaging/package.sh "$version" "$PLATFORM"
+          bash packaging/package.sh "${VERSION#v}" "$PLATFORM"
           ls -la dist
       # ---- End of what the README decides.
 
@@ -129,8 +130,8 @@ jobs:
               if under:
                   inner = under
           wanted = {
-              "windows": ["Noctorium Stats.exe"],
-              "linux": ["noctorium-stats", "noctorium-stats.desktop", "noctorium-stats.png"],
+              "windows-x64": ["Noctorium Stats.exe"],
+              "linux-x64": ["noctorium-stats", "noctorium-stats.desktop", "noctorium-stats.png"],
           }.get(platform, ["Noctorium Stats.app/Contents/Info.plist"])
           missing = [w for w in wanted if w not in inner and w not in names]
           if missing:
@@ -193,10 +194,12 @@ jobs:
             macos-arm64) echo "$archs" | grep -qw arm64 ;;
             macos-x64) echo "$archs" | grep -qw x86_64 ;;
           esac
+          # Numbers and dots only, as a bundle's version has to be: 1.2.3-beta.1 is 1.2.3 there.
           shown=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" || true)
+          version="${VERSION#v}"
           echo "Finder shows version $shown"
-          if [ "$shown" != "${VERSION#v}" ]; then
-            echo "::warning::Noctorium Stats.app says it is version '$shown', not ${VERSION#v}."
+          if [ "$shown" != "${version%%[-+]*}" ]; then
+            echo "::warning::Noctorium Stats.app says it is version '$shown', not ${version%%[-+]*}."
           fi
           codesign --verify --deep --strict --verbose=2 "$app" || echo "::warning::Noctorium Stats.app's signature does not verify."
 
