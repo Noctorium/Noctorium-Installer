@@ -1,7 +1,7 @@
 name: noctorium_installer
-description: Fetches the latest Noctorium release from GitHub and hands it to Android's installer.
+description: Fetches the latest Noctorium, or Noctorium Stats, from GitHub and hands it to Android's installer.
 publish_to: none
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

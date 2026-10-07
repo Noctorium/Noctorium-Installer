@@ -43,6 +43,62 @@ void main() {
     expect(release.apk?.name, 'Noctorium-1.0.0.apk');
   });
 
+  // A release from 0.13 on: Noctorium's APK, Noctorium Stats' and the installer's own, listed in an order
+  // that puts Stats first -- which GitHub does not do today, sorting by name, and need never promise.
+  const withStats = '''
+  {
+    "tag_name": "v0.13.0",
+    "assets": [
+      {"name": "Noctorium-Stats-0.13.0.apk", "browser_download_url": "https://example.test/stats.apk", "size": 21000000},
+      {"name": "Noctorium-Installer-android.apk", "browser_download_url": "https://example.test/installer.apk", "size": 9000000},
+      {"name": "noctorium-stats-0.13.0-windows-x64.zip", "browser_download_url": "https://example.test/stats.zip", "size": 6400000},
+      {"name": "Noctorium-0.13.0.apk", "browser_download_url": "https://example.test/noctorium.apk", "size": 17600515},
+      {"name": "noctorium-cli-0.13.0-windows-x64.zip", "browser_download_url": "https://example.test/cli.zip", "size": 60000000},
+      {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.test/SHA256SUMS.txt", "size": 2400}
+    ]
+  }
+  ''';
+
+  test('Noctorium and Noctorium Stats each take their own APK, whatever order they are listed in', () {
+    final release = Release.fromJson(withStats);
+    expect(release.apk?.name, 'Noctorium-0.13.0.apk');
+    expect(release.statsApk?.name, 'Noctorium-Stats-0.13.0.apk');
+    expect(release.statsApk?.size, 21000000);
+
+    // And the other way round, as GitHub lists them today.
+    final sorted = Release(tag: release.tag, assets: release.assets.reversed.toList());
+    expect(sorted.apk?.name, 'Noctorium-0.13.0.apk');
+    expect(sorted.statsApk?.name, 'Noctorium-Stats-0.13.0.apk');
+  });
+
+  test('a release from before Noctorium Stats has Noctorium and no Stats', () {
+    // 0.12.2 as published, less the desktop's files.
+    final release = Release.fromJson('''
+    {
+      "tag_name": "v0.12.2",
+      "assets": [
+        {"name": "Noctorium-0.12.2.apk", "browser_download_url": "u", "size": 17600515},
+        {"name": "Noctorium-Installer-android.apk", "browser_download_url": "u", "size": 9000000},
+        {"name": "noctorium-cli-0.12.2-linux-x64.tar.gz", "browser_download_url": "u", "size": 1},
+        {"name": "SHA256SUMS.txt", "browser_download_url": "u", "size": 2078}
+      ]
+    }
+    ''');
+    expect(release.apk?.name, 'Noctorium-0.12.2.apk');
+    expect(release.statsApk, isNull);
+  });
+
+  test('nothing but the shape of a name answers for an APK', () {
+    Release named(List<String> names) =>
+        Release(tag: 'v1', assets: [for (final name in names) Asset(name: name, url: 'u', size: 1)]);
+    expect(named(['Noctorium-Stats-1.0.0.apk']).apk, isNull, reason: 'Stats is never Noctorium');
+    expect(named(['Noctorium-1.0.0.apk']).statsApk, isNull, reason: 'nor Noctorium Stats');
+    expect(named(['Noctorium-Installer-android.apk']).statsApk, isNull);
+    expect(named(['Noctorium-Stats-1.0.0.apk.sha256']).statsApk, isNull);
+    expect(named(['noctorium-stats-1.0.0-macos-arm64.zip']).statsApk, isNull);
+    expect(named(['noctorium-stats-1.0.0.apk']).statsApk?.name, 'noctorium-stats-1.0.0.apk');
+  });
+
   test('a release published for the desktop only says so rather than installing an exe', () {
     final release = Release.fromJson('{"tag_name":"v9","assets":[{"name":"x.exe","browser_download_url":"u","size":1}]}');
     expect(release.apk, isNull);

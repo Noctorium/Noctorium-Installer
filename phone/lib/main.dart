@@ -1,10 +1,11 @@
 /// Noctorium's installer for a phone.
 ///
-/// One screen and one button. It asks GitHub for the latest release, downloads the APK, checks it
-/// against the checksum published beside it, and hands it to Android's own package installer -- which
-/// then shows its own screen and asks again, and the first time also sends you to a settings page to
-/// allow this application to install others at all. Nothing here installs anything itself, and that is
-/// deliberate: three steps between a download and a new application, all three belonging to Android.
+/// One screen and a button for each thing it installs: Noctorium, and Noctorium Stats beside it. It asks
+/// GitHub for the latest release, downloads the APK, checks it against the checksum published beside it,
+/// and hands it to Android's own package installer -- which then shows its own screen and asks again, and
+/// the first time also sends you to a settings page to allow this application to install others at all.
+/// Nothing here installs anything itself, and that is deliberate: three steps between a download and a
+/// new application, all three belonging to Android.
 library;
 
 import 'dart:io';
@@ -28,8 +29,29 @@ const MethodChannel installerChannel = MethodChannel('app.noctorium.installer/in
 
 void main() => runApp(const InstallerApp());
 
+/// How the latest release is found out about: GitHub, unless a test says otherwise.
+typedef ReleaseLookup = Future<Release> Function();
+
+/// What this installs.
+enum Product {
+  noctorium('Noctorium'),
+  stats('Noctorium Stats');
+
+  const Product(this.title);
+
+  final String title;
+
+  /// Its APK in [release], or null when the release carries none.
+  Asset? apkIn(Release release) => switch (this) {
+        Product.noctorium => release.apk,
+        Product.stats => release.statsApk,
+      };
+}
+
 class InstallerApp extends StatelessWidget {
-  const InstallerApp({super.key});
+  const InstallerApp({super.key, this.lookUp});
+
+  final ReleaseLookup? lookUp;
 
   @override
   Widget build(BuildContext context) {
@@ -43,16 +65,21 @@ class InstallerApp extends StatelessWidget {
       title: 'Noctorium Installer',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorScheme: scheme, useMaterial3: true),
-      home: const InstallerScreen(),
+      home: InstallerScreen(lookUp: lookUp),
     );
   }
 }
 
 /// How far along the one job this application has is.
-enum Stage { idle, asking, downloading, checking, handingOver, done, failed }
+///
+/// [unavailable] is not a failure: Noctorium Stats was asked for of a release from before it, which is
+/// said plainly, and Noctorium is still there to install.
+enum Stage { idle, asking, downloading, checking, handingOver, done, failed, unavailable }
 
 class InstallerScreen extends StatefulWidget {
-  const InstallerScreen({super.key});
+  const InstallerScreen({super.key, this.lookUp});
+
+  final ReleaseLookup? lookUp;
 
   @override
   State<InstallerScreen> createState() => _InstallerScreenState();
@@ -60,24 +87,69 @@ class InstallerScreen extends StatefulWidget {
 
 class _InstallerScreenState extends State<InstallerScreen> {
   Stage _stage = Stage.idle;
-  String _message = 'Install the latest Noctorium on this phone.';
+  String _message = 'Install the latest Noctorium on this phone, or Noctorium Stats, which shows what '
+      'you have listened to.';
   double? _progress;
   String? _version;
+
+  /// The product the last thing that happened was about, whose button says how it went.
+  Product _product = Product.noctorium;
+
+  /// The latest release, as far as it was asked about when the screen opened: what says whether there is
+  /// a Noctorium Stats to offer. Null until it answers, and if it never does, which only means the button
+  /// finds out for itself.
+  Release? _latest;
 
   bool get _busy =>
       _stage == Stage.asking || _stage == Stage.downloading || _stage == Stage.checking || _stage == Stage.handingOver;
 
-  Future<void> _install() async {
+  /// Whether Noctorium Stats can be installed from the latest release: false only when it was asked, and
+  /// said no.
+  bool get _statsThere => _latest == null || _latest!.statsApk != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _lookAhead();
+  }
+
+  /// Asks what the latest release carries before anything is pressed, so a button for something it does
+  /// not carry is not offered. Asking changes nothing, and a failure here is no failure at all: the
+  /// install asks again, and says what went wrong then.
+  Future<void> _lookAhead() async {
+    try {
+      final release = await _release();
+      if (mounted) setState(() => _latest = release);
+    } catch (_) {
+      // Said, if it matters, when somebody presses a button.
+    }
+  }
+
+  Future<Release> _release() => widget.lookUp?.call() ?? _latestRelease();
+
+  Future<void> _install(Product product) async {
     setState(() {
+      _product = product;
       _stage = Stage.asking;
       _progress = null;
       _message = 'Asking GitHub for the latest release...';
     });
 
     try {
-      final release = await _latestRelease();
-      final apk = release.apk;
+      final release = await _release();
+      _latest = release;
+      final apk = product.apkIn(release);
       final checksums = release.checksums;
+      if (apk == null && product == Product.stats) {
+        // Not a failure: a release from before Stats, which is every release until one carries it.
+        setState(() {
+          _version = release.tag;
+          _stage = Stage.unavailable;
+          _message = 'Noctorium Stats is not in ${release.tag} yet, so there is nothing to install for it. '
+              'It is new, and the release that first carries it will have it. Noctorium itself is there.';
+        });
+        return;
+      }
       if (apk == null) {
         throw const _Refused('The latest release carries no APK. It may have been published for the desktop only.');
       }
@@ -97,7 +169,7 @@ class _InstallerScreenState extends State<InstallerScreen> {
       final listing = await _text(checksums.url);
       final published = publishedChecksum(listing, apk.name);
       if (published == null) {
-        throw const _Refused('The release lists no checksum for its APK, so it cannot be checked.');
+        throw _Refused('The release lists no checksum for ${apk.name}, so it cannot be checked.');
       }
 
       final file = await _download(apk);
@@ -127,7 +199,7 @@ class _InstallerScreenState extends State<InstallerScreen> {
 
       setState(() {
         _stage = Stage.done;
-        _message = 'Android has the APK. Its own installer takes it from here.\n\n'
+        _message = 'Android has ${product.title}. Its own installer takes it from here.\n\n'
             'The first time, it will send you to a settings page to allow this app to install others.';
       });
     } on _Refused catch (refusal) {
@@ -176,7 +248,7 @@ class _InstallerScreenState extends State<InstallerScreen> {
     // stored, and is how somebody reaches a private repository.
     const token = String.fromEnvironment('GITHUB_TOKEN');
     return http.get(url, headers: {
-      'User-Agent': 'noctorium-installer/1.0',
+      'User-Agent': 'noctorium-installer/1.1',
       if (token.isNotEmpty) 'Authorization': 'Bearer $token',
     });
   }
@@ -192,7 +264,7 @@ class _InstallerScreenState extends State<InstallerScreen> {
     final file = File('${directory.path}/${asset.name}');
 
     final request = http.Request('GET', Uri.parse(asset.url))
-      ..headers['User-Agent'] = 'noctorium-installer/1.0';
+      ..headers['User-Agent'] = 'noctorium-installer/1.1';
     final response = await http.Client().send(request);
     if (response.statusCode != 200) {
       throw _Refused('The download was refused (HTTP ${response.statusCode}).');
@@ -222,16 +294,25 @@ class _InstallerScreenState extends State<InstallerScreen> {
     return digest.toString();
   }
 
+  /// What a product's button says: what it does, or -- for the product the last attempt was about -- how
+  /// that went.
+  String _label(Product product) {
+    if (product == _product && _stage == Stage.done) return 'Install ${product.title} again';
+    if (product == _product && _stage == Stage.failed) return 'Try ${product.title} again';
+    return 'Install ${product.title}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final quiet = TextStyle(color: scheme.onSurfaceVariant, height: 1.4);
     return Scaffold(
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(28),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text('Noctorium', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
@@ -252,12 +333,22 @@ class _InstallerScreenState extends State<InstallerScreen> {
               if (_busy && _stage != Stage.downloading) const LinearProgressIndicator(),
               const SizedBox(height: 28),
               FilledButton(
-                onPressed: _busy ? null : _install,
-                child: Text(switch (_stage) {
-                  Stage.done => 'Install again',
-                  Stage.failed => 'Try again',
-                  _ => 'Install Noctorium',
-                }),
+                onPressed: _busy ? null : () => _install(Product.noctorium),
+                child: Text(_label(Product.noctorium)),
+              ),
+              const SizedBox(height: 24),
+              // Its own app, beside the player rather than part of it, so its own button -- offered only
+              // when the release has it, and saying so when it does not, rather than failing when pressed.
+              Text(
+                _statsThere
+                    ? 'Noctorium Stats: your listening, in figures, from your Noctorium account.'
+                    : 'Noctorium Stats is not in ${_latest!.tag} yet.',
+                style: quiet,
+              ),
+              const SizedBox(height: 10),
+              FilledButton.tonal(
+                onPressed: _busy || !_statsThere ? null : () => _install(Product.stats),
+                child: Text(_label(Product.stats)),
               ),
             ],
           ),

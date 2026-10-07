@@ -48,14 +48,25 @@ class Release {
     );
   }
 
-  /// Noctorium's APK, or null when the release carries none.
+  /// Noctorium's APK, `Noctorium-<version>.apk`, or null when the release carries none.
   ///
-  /// This application is published to the same release as the one it installs, so its own APK is
-  /// skipped. Without that, the installer would earnestly offer to install itself.
-  Asset? get apk {
+  /// By its whole shape, not by its ending: a release carries three APKs -- Noctorium's, Noctorium
+  /// Stats', and this installer's own -- and "ends with .apk" picks whichever GitHub lists first. That
+  /// happens to be Noctorium's today, because GitHub lists them by name; nothing promises it will.
+  Asset? get apk => _first(_noctorium);
+
+  /// Noctorium Stats' APK, `Noctorium-Stats-<version>.apk`, or null when the release carries none --
+  /// which every release before Stats does not.
+  Asset? get statsApk => _first(_stats);
+
+  /// A version starts with a digit, which is what keeps `Noctorium-Stats-...` and
+  /// `Noctorium-Installer-...` from answering for `Noctorium-<version>`.
+  static final RegExp _noctorium = RegExp(r'^noctorium-\d[^/]*\.apk$', caseSensitive: false);
+  static final RegExp _stats = RegExp(r'^noctorium-stats-\d[^/]*\.apk$', caseSensitive: false);
+
+  Asset? _first(RegExp shape) {
     for (final asset in assets) {
-      final name = asset.name.toLowerCase();
-      if (name.endsWith('.apk') && !name.contains('installer')) return asset;
+      if (shape.hasMatch(asset.name)) return asset;
     }
     return null;
   }
