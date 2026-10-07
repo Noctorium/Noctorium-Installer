@@ -5,6 +5,11 @@ name: Install scripts
 # the way it is run there, against the real latest release, as far as a dry run goes: the terminal
 # installer fetched, checked against SHA256SUMS.txt, and asked what it would do. Nothing is installed on
 # the runners.
+#
+# What each asks the installer for when Noctorium Stats comes into it is also tried without a network, in
+# scripts/tests/, against a release with Stats and one from before it -- since these go live the moment
+# main is pushed, and "latest" may well be a release that has no Stats and an installer that has never
+# heard of it.
 on:
   push:
     branches: [main]
@@ -35,7 +40,11 @@ jobs:
       - name: Parses as POSIX sh
         run: sh -n scripts/install.sh
       - name: ShellCheck
-        run: shellcheck --shell=sh scripts/install.sh
+        run: shellcheck --shell=sh scripts/install.sh scripts/tests/products.sh
+
+      # dash, as above: what it asks the installer for, from what was asked and what the release has.
+      - name: What it asks for, with Noctorium Stats and without
+        run: sh scripts/tests/products.sh
 
       # --yes as well, because with --product both the installer asks which format on Linux, and a runner
       # has nobody to answer. A dry run with --yes still stops before anything is downloaded.
@@ -46,6 +55,16 @@ jobs:
       # terminal, so this is also the path where /dev/tty cannot be opened and the installer is run as it is.
       - name: Run it piped
         run: cat scripts/install.sh | sh -s -- --dry-run --product cli --no-color
+
+      # Everything there is, against whatever is latest: Noctorium Stats with the rest when the release
+      # has it, and left out with a word when it does not -- never a failure, and never the word "stats"
+      # handed to an installer that does not know it. NOCTORIUM_PRODUCT is how the same is asked of a
+      # script piped into sh with nothing after it.
+      - name: Everything, with or without Noctorium Stats
+        run: |
+          sh scripts/install.sh --dry-run --yes --product all --no-color
+          sh scripts/install.sh --dry-run --yes --product stats --no-color
+          cat scripts/install.sh | NOCTORIUM_PRODUCT=desktop,stats sh -s -- --dry-run --yes --no-color
 
       # A typo is the installer's 2, and it has to come back out of the script as 2.
       - name: The installer's exit status comes back
@@ -69,6 +88,12 @@ jobs:
         run: sh scripts/install.sh --dry-run --yes --product both --no-color
       - name: Run it piped
         run: cat scripts/install.sh | sh -s -- --dry-run --yes --product cli --no-color
+      - name: What it asks for, with Noctorium Stats and without
+        run: sh scripts/tests/products.sh
+      - name: Everything, with or without Noctorium Stats
+        run: |
+          sh scripts/install.sh --dry-run --yes --product all --no-color
+          sh scripts/install.sh --dry-run --yes --product stats --no-color
       - name: The installer's exit status comes back
         run: |
           status=0
@@ -102,6 +127,25 @@ jobs:
           & ([scriptblock]::Create((Get-Content -Raw scripts/install.ps1))) --dry-run --product both --no-color
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 left LASTEXITCODE at $LASTEXITCODE, not 0" }
 
+      - name: What it asks for, with Noctorium Stats and without
+        run: |
+          $global:LASTEXITCODE = 0
+          ./scripts/tests/products.ps1
+          if ($LASTEXITCODE -ne 0) { throw "scripts/tests/products.ps1 found $LASTEXITCODE wrong" }
+
+      # As install.sh's: Stats with the rest when the latest release has it, and left out with a word when
+      # it does not. NOCTORIUM_PRODUCT is how iex is told, which takes no options; here it is given them as
+      # well, so the dry run stops before anything is downloaded.
+      - name: Everything, with or without Noctorium Stats
+        run: |
+          & ([scriptblock]::Create((Get-Content -Raw scripts/install.ps1))) --dry-run --yes --product all --no-color
+          if ($LASTEXITCODE -ne 0) { throw "--product all left LASTEXITCODE at $LASTEXITCODE, not 0" }
+          & ([scriptblock]::Create((Get-Content -Raw scripts/install.ps1))) --dry-run --yes --product stats --no-color
+          if ($LASTEXITCODE -ne 0) { throw "--product stats left LASTEXITCODE at $LASTEXITCODE, not 0" }
+          $env:NOCTORIUM_PRODUCT = 'desktop,stats'
+          & ([scriptblock]::Create((Get-Content -Raw scripts/install.ps1))) --dry-run --yes --no-color
+          if ($LASTEXITCODE -ne 0) { throw "NOCTORIUM_PRODUCT left LASTEXITCODE at $LASTEXITCODE, not 0" }
+
       # The installer's 2 for a typo has to reach $LASTEXITCODE, and the lines after it have to run: the
       # script returns rather than calling exit, which through iex would close the window it was typed into.
       - name: The installer's exit status comes back, and the session carries on
@@ -122,8 +166,8 @@ jobs:
         run: |
           Get-Content -Raw scripts/install.ps1 | Invoke-Expression
           if ($LASTEXITCODE -ne 1) { throw "install.ps1 left LASTEXITCODE at $LASTEXITCODE, not 1" }
-          $left = @(Get-Variable asset, sums, options, plain, repository, base, folder, installer -ErrorAction SilentlyContinue) +
-            @(Get-Command Say, Fail -ErrorAction SilentlyContinue)
+          $left = @(Get-Variable asset, sums, options, plain, repository, base, folder, installer, choice, kept -ErrorAction SilentlyContinue) +
+            @(Get-Command Say, Fail, Fetch, Resolve-Product -ErrorAction SilentlyContinue)
           if ($left) { throw "install.ps1 left behind: $($left.Name -join ', ')" }
           $global:LASTEXITCODE = 0
 
@@ -135,6 +179,7 @@ jobs:
           if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
             Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
           }
-          $findings = Invoke-ScriptAnalyzer -Path scripts/install.ps1 -Severity Warning, Error -ExcludeRule PSAvoidUsingWriteHost
+          $findings = @('scripts/install.ps1', 'scripts/tests/products.ps1') |
+            ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning, Error -ExcludeRule PSAvoidUsingWriteHost }
           $findings | Format-Table RuleName, Severity, Line, Message -AutoSize -Wrap
           if ($findings) { throw "PSScriptAnalyzer has $(@($findings).Count) finding(s)" }

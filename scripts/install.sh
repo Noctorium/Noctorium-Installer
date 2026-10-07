@@ -13,6 +13,17 @@
 # found and asks before it changes anything; --help lists what else it takes. Its exit status is this
 # script's: 0 when it did what was asked, 1 when it did not, 2 when the options were not understood.
 #
+# It offers Noctorium, the Noctorium CLI and Noctorium Stats, which shows what you have listened to:
+# --product desktop, cli, stats, both (Noctorium and the CLI) or all, or several joined by commas, such as
+# desktop,stats. NOCTORIUM_PRODUCT in the environment says the same, for when options are awkward:
+#
+#   curl -fsSL https://noctorium.vercel.app/install | NOCTORIUM_PRODUCT=stats sh
+#
+# Noctorium Stats is new, and a release from before it has none, nor an installer that knows its name. So
+# when Stats is asked for, this looks in SHA256SUMS.txt first: if the release has no Stats for this
+# machine, it is left out, said so, and the rest is installed as the installer knows it -- nothing is
+# downloaded for Stats, and nothing fails for want of it.
+#
 # Plain POSIX sh, because it is piped into whatever sh is -- dash on Debian and Ubuntu, and on a Mac a bash
 # from 2006 standing in for it. Everything happens in main, called on the last line, so a download cut
 # short defines half a function and runs nothing.
@@ -79,13 +90,46 @@ main() {
     trap 'rm -rf "$tmp"; exit 143' TERM
 
     printf '\n'
+    # The checksums first: they say whether the release has Noctorium Stats, which decides what the
+    # installer is asked for -- and whether there is anything to fetch it for at all.
+    if ! download "$base/$sums" "$tmp/$sums"; then
+        fail "Could not download $base/$sums"
+        return 1
+    fi
+
+    choose_products "$system" "$tmp/$sums" "$@"
+    if [ -n "$stats_left_out" ]; then
+        say "Noctorium Stats is not in the latest release yet, so it is left out, and nothing is downloaded for it."
+    fi
+    if [ -n "$nothing_left" ]; then
+        say "Nothing else was asked for, so nothing has been installed."
+        return 0
+    fi
+    if [ -n "$product" ]; then
+        # The options again, with --product said once, as worked out: whatever --product said before, and
+        # however it said it, goes, and NOCTORIUM_PRODUCT is passed on as an option, which an installer
+        # from before it reads where it would not read the variable.
+        skip=
+        for argument do
+            shift
+            if [ -n "$skip" ]; then
+                skip=
+                continue
+            fi
+            case $argument in
+                --product) skip=1; continue ;;
+                --product=*) continue ;;
+            esac
+            set -- "$@" "$argument"
+        done
+        set -- "$@" --product "$product"
+    fi
+
     say "Fetching the Noctorium installer from $repository, the latest release..."
-    for name in "$asset" "$sums"; do
-        if ! download "$base/$name" "$tmp/$name"; then
-            fail "Could not download $base/$name"
-            return 1
-        fi
-    done
+    if ! download "$base/$asset" "$tmp/$asset"; then
+        fail "Could not download $base/$asset"
+        return 1
+    fi
 
     # Lines of "<sha256>  <name>", as sha256sum writes them; a star before the name means binary mode.
     expected=$(tr -d '\r' < "$tmp/$sums" | awk -v name="$asset" '
@@ -127,6 +171,88 @@ main() {
         fail "The installer could not be run from $tmp. If that is mounted noexec, set TMPDIR to a folder that is not, and try again."
     fi
     return "$status"
+}
+
+# What to ask the installer for, from what was asked -- the last --product in the options, or
+# NOCTORIUM_PRODUCT -- and what the release has for this system ($1), as its checksums ($2) list it. Sets:
+#
+#   product         the --product to run the installer with, or nothing to pass the options on unchanged
+#   stats_left_out  set when Noctorium Stats was asked for and the release has none for this machine
+#   nothing_left    set when that was all that was asked for, and there is nothing to run the installer for
+#
+# Unchanged when nothing was asked for, which is the installer's own question to ask; when what was asked
+# is not something this knows, which is the installer's to refuse, with its exit status of 2; and when the
+# options ask for help, a version or a listing, which install nothing.
+choose_products() {
+    product='' stats_left_out='' nothing_left=''
+    for_system=$1 listing=$2
+    shift 2
+    asked=${NOCTORIUM_PRODUCT:-} next=''
+    for argument do
+        if [ -n "$next" ]; then
+            asked=$argument next=''
+            continue
+        fi
+        case $argument in
+            -h | --help | -V | --about | --list) return 0 ;;
+            --product) next=1; asked='' ;;
+            --product=*) asked=${argument#--product=} ;;
+        esac
+    done
+    # --product with nothing after it is a mistake for the installer to point out.
+    if [ -n "$next" ] || [ -z "$asked" ]; then
+        return 0
+    fi
+    case $asked in -*) return 0 ;; esac
+
+    desktop='' cli='' stats='' known=1
+    words=$(printf '%s' "$asked" | tr 'A-Z,+' 'a-z  ')
+    # Split on spaces and nothing else: a * in what somebody typed is not a list of files.
+    set -f
+    for word in $words; do
+        case $word in
+            desktop) desktop=1 ;;
+            cli) cli=1 ;;
+            stats) stats=1 ;;
+            both) desktop=1 cli=1 ;;
+            all) desktop=1 cli=1 stats=1 ;;
+            *) known='' ;;
+        esac
+    done
+    set +f
+    if [ -z "$known" ]; then
+        return 0
+    fi
+    if [ -n "$stats" ] && ! has_stats "$for_system" "$listing"; then
+        stats='' stats_left_out=1
+    fi
+    # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats is only
+    # still here when the release, and so its installer, has it. Without Stats, the words every installer
+    # has always taken.
+    if [ -n "$stats" ]; then
+        product=${desktop:+desktop,}${cli:+cli,}stats
+    elif [ -n "$desktop" ] && [ -n "$cli" ]; then
+        product=both
+    elif [ -n "$desktop" ]; then
+        product=desktop
+    elif [ -n "$cli" ]; then
+        product=cli
+    else
+        nothing_left=1
+    fi
+}
+
+# Whether the checksums ($2) list a Noctorium Stats for this system ($1): the Linux archive, or either of
+# the Mac's, since which one a Mac takes is the installer's to work out.
+has_stats() {
+    case $1 in
+        Darwin) shape='^noctorium-stats-[0-9][^/]*-macos-(arm64|x64)[.]zip$' ;;
+        *) shape='^noctorium-stats-[0-9][^/]*-linux-x64[.]tar[.]gz$' ;;
+    esac
+    tr -d '\r' < "$2" | awk -v shape="$shape" '
+        { file = $2; sub(/^\*/, "", file) }
+        file ~ shape { found = 1 }
+        END { exit found ? 0 : 1 }'
 }
 
 # Colour only for a terminal, and not when NO_COLOR is set or --no-color was given.
