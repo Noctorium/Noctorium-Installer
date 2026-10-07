@@ -84,7 +84,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev desktop-file-utils
 
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
 
       # ---- As Noctorium-Stats-Desktop's packaging/package.sh says: given the version and the platform --
       # windows-x64, linux-x64, macos-arm64 or macos-x64, the names this matrix uses -- it builds the
@@ -228,9 +228,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      # The Flutter Noctorium-Stats-Mobile is made and tested with, as its own CI pins it.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: 3.47.6
           cache: true
 
       # As the Android job in release.yml does it, with the same secrets: one keystore, so Noctorium and
@@ -264,7 +266,8 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
       - run: flutter pub get
-      - run: flutter test
+      # Not the pictures: they are drawn on Windows, and Linux sets the same text a pixel differently.
+      - run: flutter test --exclude-tags golden
 
       # ---- As Noctorium-Stats-Mobile's README says: a release APK, its version given on the command line,
       # signed from the same four variables Noctorium-Mobile's build reads.
