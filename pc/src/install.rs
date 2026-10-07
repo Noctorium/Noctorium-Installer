@@ -3578,8 +3578,11 @@ mod tests {
         let Value::Text(uninstall) = value("UninstallString") else {
             panic!("not text")
         };
+        // The path is joined by the system the test runs on: backslashes on Windows, the only place it is
+        // used, and slashes in the CI's Linux and Mac runs of the same test.
+        assert!(uninstall.contains("WindowsPowerShell"), "{uninstall}");
         assert!(
-            uninstall.contains(r#"WindowsPowerShell\v1.0\powershell.exe" -NoProfile"#),
+            uninstall.contains(r#"powershell.exe" -NoProfile"#),
             "{uninstall}"
         );
         assert!(
