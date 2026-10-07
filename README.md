@@ -4,8 +4,17 @@ This is where Noctorium is published: the Windows installer, the Android APK, a 
 of Mac, and for Linux a Debian package, an RPM, an Arch package, an AppImage and a Flatpak, with a
 `SHA256SUMS.txt` beside them. The applications check here for updates. The player itself is elsewhere —
 the desktop is [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop), the phone is
-[Noctorium-Mobile](https://github.com/Noctorium/Noctorium-Mobile), and what they share is
+[Noctorium-Mobile](https://github.com/Noctorium/Noctorium-Mobile), the terminal player is
+[Noctorium-cli](https://github.com/Noctorium/Noctorium-cli), and what they share is
 [Noctorium-Base](https://github.com/Noctorium/Noctorium-Base).
+
+Every release also carries **Noctorium Stats**, which signs in to your Noctorium account and shows what you
+have listened to: songs, artists, hours, the services, the time of day. It is a program of its own, beside
+the player rather than part of it — for the computer from
+[Noctorium-Stats-Desktop](https://github.com/Noctorium/Noctorium-Stats-Desktop), for Windows, Linux and
+both kinds of Mac, and for the phone from
+[Noctorium-Stats-Mobile](https://github.com/Noctorium/Noctorium-Stats-Mobile) — and every installer here
+offers it beside Noctorium.
 
 What *is* here, besides the release pipeline, is the small installers, and in `packaging/` the sources
 of the Linux formats that jpackage does not make by itself.
@@ -39,6 +48,16 @@ pass any on, so on Windows the line becomes a script block:
 curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product cli --yes
 ```
 
+`NOCTORIUM_PRODUCT` says what `--product` would, which is the way to tell `iex`:
+
+```powershell
+$env:NOCTORIUM_PRODUCT = 'desktop,stats'; irm https://noctorium.vercel.app/install | iex
+```
+
+```bash
+curl -fsSL https://noctorium.vercel.app/install | NOCTORIUM_PRODUCT=stats sh
+```
+
 If noctorium.vercel.app is ever down, the same scripts come straight from this repository:
 
 ```powershell
@@ -56,13 +75,22 @@ close the window. `install.sh` fetches the Linux installer on Linux and the Mac'
 file for Apple silicon and Intel alike. `.github/workflows/scripts.yml` runs both against the real latest
 release whenever they change.
 
+The scripts are served from main, so they are live the moment it is pushed — and "latest" may then be a
+release from before Noctorium Stats, which has none of its files and an installer that has never heard of
+it. So when Stats is asked for, each looks in `SHA256SUMS.txt` before it fetches anything: a release with
+no Stats for this machine has it left out, with a line saying so, and the rest is asked of the installer
+in words it knows (`--product all` becomes `--product both`). Nothing is downloaded for Stats, nothing
+fails for want of it, and when Stats was all that was asked for, nothing is installed and the exit status
+is 0. `scripts/tests/` tries exactly that, without a network, against a release shaped like 0.12.2 and
+one with Stats in it.
+
 | | Where | Built from |
 | --- | --- | --- |
 | `Noctorium-Installer-windows-x64.exe` | Windows, in a window | `pc/`, in Rust |
 | `Noctorium-Installer-x86_64.AppImage`, or the bare `noctorium-installer-linux-x64` | Linux, in a window | `pc/` |
 | `noctorium-installer-cli-windows-x64.exe`, `noctorium-installer-cli-linux-x64` | A terminal, on either | `pc/` |
 | `noctorium-installer-cli-macos` | A terminal on a Mac, Apple silicon or Intel: one universal file | `pc/` |
-| `Noctorium-Installer-android.apk` | Android | `phone/`, in Dart with Flutter |
+| `Noctorium-Installer-android.apk` | Android: Noctorium, or Noctorium Stats | `phone/`, in Dart with Flutter |
 
 None of them installs a package itself. The PC ones hand Windows its `.msi`, or the package to the
 distribution's own package manager — `apt`, `dnf`, `zypper` or `pacman` — so dependencies are resolved
@@ -81,14 +109,18 @@ against 7.5 for the `.msi`. It is only run for a release that has no `.msi`. Who
 folder still can: `--wizard` in the terminal, or the box under the button in the window, opens the
 `.msi`'s own pages instead. What has no package manager, they put in place themselves, for the person
 running them and nobody else: an AppImage in `~/Applications` with a menu entry, a Flatpak bundle handed
-to `flatpak install --user`, the Noctorium CLI unpacked into a folder of its own. On a Mac, Noctorium.app
-is copied out of its disk image into `/Applications`, as dragging it there would. The phone one hands the
-APK to Android's own package installer, which shows its own screen and asks again — and the first time
-sends you to a settings page to allow it at all.
+to `flatpak install --user`, the Noctorium CLI and Noctorium Stats unpacked into folders of their own. On a Mac,
+Noctorium.app is copied out of its disk image into `/Applications`, as dragging it there would, and
+Noctorium Stats.app out of its zip beside it. The phone one hands the APK — Noctorium's, or Noctorium
+Stats' — to Android's own package installer, which shows its own screen and asks again, and the first
+time sends you to a settings page to allow it at all. It offers Stats only when the latest release has
+it, and says so when it does not.
 
 All of them refuse to install anything they cannot check. A release with no `SHA256SUMS.txt`, or a
 download that does not match the checksum published for it, is deleted rather than run. All of them skip
-their own files in a release, so an installer never offers to install itself.
+their own files in a release, so an installer never offers to install itself — and each finds a file by
+the whole shape of its name, never by its ending alone: a release carries three APKs, Noctorium's,
+Noctorium Stats' and the phone installer's, and Stats' archives end the way the Noctorium CLI's do.
 
 All of them read `GITHUB_TOKEN` from the environment if it is set. This repository is public, so none
 needs it to see a release; it only raises the rate limit an address shares with everyone else behind it.
@@ -96,11 +128,12 @@ needs it to see a release; it only raises the rate limit an address shares with 
 The window ones show what they found, wait to be told to go ahead, and draw a progress bar; it is the
 first thing anybody sees of Noctorium, usually before they have any reason to trust it, and a console full
 of scrolling text is not what somebody who has just downloaded a music player expects. They offer
-Noctorium, the Noctorium CLI, or both — a box for each, Noctorium ticked to begin with, each saying how
-much it is to download — and then a bar for each, and at the end how to start each one. On Linux the
-window has one more row, for the format, which starts on whatever this machine would pick.
+Noctorium, the Noctorium CLI and Noctorium Stats — a box for each, Noctorium ticked to begin with, each
+saying how much it is to download, or that this release does not have it yet — and then a bar for each,
+and at the end how to start each one. On Linux the window has one more row, for the format, which starts
+on whatever this machine would pick.
 
-Both products download at once, a big file over four connections — on the line this was measured on,
+Everything chosen downloads at once, a big file over four connections — on the line this was measured on,
 GitHub's CDN gave each connection about 2 MB/s, and both products came down in 40 seconds rather than
 190 — and each is installed as soon as its own download is checked: the Noctorium CLI, a fifth of the
 size, is in while Noctorium is still coming down. A download is kept, under `noctorium-installer` in the temporary folder, until it has been
@@ -115,28 +148,29 @@ is no window one for a Mac: the one-line script and the terminal installer are h
 
 `noctorium-installer-cli` is the same installer for a terminal: cmd, PowerShell and Windows Terminal on
 Windows, anything on Linux or a Mac. It says what it found — the machine, the distribution, its package
-manager, the release — asks which product and, on Linux, which format, shows the file and the exact
+manager, the release — asks which products and, on Linux, which format, shows the file and the exact
 command it is about to run, and asks once more before it downloads anything. Every question has a
 default, and `--yes` takes them all, so the same program serves somebody at a prompt and a script
 installing Noctorium on a row of machines.
 
 ```
-  ♫ Noctorium  installer 1.3.0
+  ♫ Noctorium  installer 1.4.0
 
   System    Ubuntu 24.04.1 LTS · x86-64 · apt, flatpak
-  Release   v0.7.0 (the latest)
+  Release   v0.13.0 (the latest)
 
   What would you like to install?
-    1  Noctorium      the music player, in a window, 242.7 MB  recommended
-    2  Noctorium CLI  the same player, in a terminal, 63.4 MB
-    3  Both           306.1 MB, downloaded at once
-  Choose 1-3 [1]
+    1  Noctorium        the music player, in a window, 242.7 MB  recommended
+    2  Noctorium CLI    the same player, in a terminal, 63.4 MB
+    3  Both             Noctorium and the CLI, 306.1 MB, at once
+    4  Noctorium Stats  your listening, in figures, in a window, 7.3 MB
+  Choose 1-4, or several, such as 1 4 [1]
 ```
 
 | Option | |
 | --- | --- |
 | `-y`, `--yes` | Ask nothing: take the defaults and install. |
-| `--product desktop\|cli\|both` | Noctorium (the default), the Noctorium CLI, or both. |
+| `--product desktop\|cli\|stats\|both\|all` | Noctorium (the default), the Noctorium CLI, Noctorium Stats, Noctorium and the CLI, or all three — or several joined by commas, such as `desktop,stats`. `NOCTORIUM_PRODUCT` says the same when there is no `--product`. |
 | `--format auto\|deb\|rpm\|arch\|appimage\|flatpak` | Linux only. `auto` is the distribution's own package where there is one, and the AppImage everywhere else. |
 | `--wizard` | Windows only. Open the `.msi`'s own pages, to choose the folder, rather than installing with a progress bar and nothing to click. |
 | `--version X.Y.Z` | Install release `vX.Y.Z` rather than the latest. |
@@ -156,6 +190,8 @@ rather than guessing.
 noctorium-installer-cli                                  # ask, then install
 noctorium-installer-cli --yes                            # Noctorium, the way this machine prefers
 noctorium-installer-cli --product both --yes             # and the Noctorium CLI beside it
+noctorium-installer-cli --product desktop,stats --yes    # Noctorium, and Noctorium Stats beside it
+noctorium-installer-cli --product all --yes              # all three
 noctorium-installer-cli --format appimage                # the AppImage, whatever the distribution
 noctorium-installer-cli --wizard                         # Windows: choose the folder in the setup's pages
 noctorium-installer-cli --product both --download-only -y    # fetch both now, install them later
@@ -188,15 +224,34 @@ afterwards; one already open keeps the old PATH), and on Linux and on a Mac into
 `~/.zprofile`, under `# Added by the Noctorium installer`, once; open a new terminal afterwards. A newer
 one replaces an older one whole. A release that does not carry it yet says so, and installs nothing.
 
-To try the install somewhere it can do no harm, point `LOCALAPPDATA` (Windows) or `HOME` at a folder of
-your own and set `NOCTORIUM_NO_PATH=1`: the CLI is unpacked in there, and your PATH — or a Mac's
-`~/.zprofile` — is left exactly as it was, which the plan says before anything happens.
+**Noctorium Stats** is installed for you alone too, and needs no password anywhere:
+
+| | Where it goes | How it is started | How it is removed |
+| --- | --- | --- | --- |
+| Windows | `%LOCALAPPDATA%\Programs\Noctorium Stats`, from `noctorium-stats-<version>-windows-x64.zip` | A Start menu shortcut, `Noctorium Stats` | Settings, Apps, Installed apps — it is entered there for this user, under `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\NoctoriumStats`, and uninstalling closes it and takes away the folder, the shortcut and the entry |
+| Linux | `~/.local/share/noctorium-stats`, from `noctorium-stats-<version>-linux-x64.tar.gz` | The applications menu, from its own `noctorium-stats.desktop` made to point there, with its icon in `~/.local/share/icons/hicolor`; and `noctorium-stats`, linked from `~/.local/bin` | Delete the folder, the link, `~/.local/share/applications/noctorium-stats.desktop` and the icon |
+| macOS | `Noctorium Stats.app` in `/Applications` (or `~/Applications`), from `noctorium-stats-<version>-macos-arm64.zip` or `-macos-x64.zip`, opened with `ditto` | Launchpad or Spotlight | Drag it to the Bin |
+
+Running the installer again updates it, the new copy unpacked beside the old one and swapped in whole, as
+the CLI is. On Windows it has to be closed first, and the installer says so before it downloads anything.
+Its settings and its sign-in — in the system's own credential store — are its own, and stay through an
+update or an uninstall. Asked of a release from before Stats, the installer leaves it out, says so, and
+installs whatever else was asked for: `--product all` against 0.12.2 is Noctorium and the CLI and a line
+about Stats, and `--product stats` alone installs nothing and exits 0.
+
+To try the install somewhere it can do no harm, point `LOCALAPPDATA` and `APPDATA` (Windows) or `HOME` at
+a folder of your own and set `NOCTORIUM_NO_PATH=1`: the CLI and Noctorium Stats are unpacked in there,
+Stats' shortcut goes into that folder's Start menu, and your PATH, a Mac's `~/.zprofile` and Windows' list
+of installed apps — which is in the registry, where no variable can point elsewhere — are left exactly as
+they were, which the plan says before anything happens.
 
 ### Building them
 
 ```bash
 cd pc    && cargo test && cargo build --release    # both PC installers
 cd phone && flutter test && flutter build apk      # the phone installer
+sh scripts/tests/products.sh                       # what the one-line scripts ask the installer for
+powershell -NoProfile -File scripts/tests/products.ps1
 
 # The terminal installer alone, without the window toolkit, as the release builds it for Linux
 cd pc && cargo build --release --no-default-features --bin noctorium-installer-cli --target x86_64-unknown-linux-musl
@@ -214,7 +269,8 @@ too; the window program it makes is the terminal installer under another name, a
 
 The window can be looked at without opening one: `cargo test --bin noctorium-installer -- --ignored
 the_window_drawn` lays out every stage of it and paints them into PNGs, in the folder
-`NOCTORIUM_RENDER_TO` names or in `noctorium-installer-render` in the temporary folder. And
+`NOCTORIUM_RENDER_TO` names or in `noctorium-installer-render` in the temporary folder. The phone's screen
+the same way: `NOCTORIUM_RENDER_TO=<folder> flutter test test/screen_test.dart` in `phone/`. And
 `cargo run --release --example bench` times what the release profile makes fast or slow — hashing,
 unpacking, and downloading over one connection or several — as `examples/bench.rs` says.
 
@@ -240,6 +296,10 @@ sudo apt-get install musl-tools && rustup target add x86_64-unknown-linux-musl
 | Any Linux with Flatpak | `Noctorium-<version>-x86_64.flatpak` |
 | Android | `Noctorium-<version>.apk` |
 | The Noctorium CLI | `noctorium-cli-<version>-windows-x64.zip`, `noctorium-cli-<version>-linux-x64.tar.gz`, `noctorium-cli-<version>-macos-arm64.tar.gz`, `noctorium-cli-<version>-macos-x64.tar.gz`, in the releases that carry it |
+| Noctorium Stats | `noctorium-stats-<version>-windows-x64.zip` (`Noctorium Stats.exe`), `noctorium-stats-<version>-linux-x64.tar.gz` (`noctorium-stats`, its `.desktop` file and its icon), `noctorium-stats-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Stats.app`), and `Noctorium-Stats-<version>.apk`, from 0.13.0 on |
+
+A release is twenty-seven files: these twenty-six and `SHA256SUMS.txt`. The release job counts them, and
+refuses to make a draft that is short of one.
 
 On a Mac, take the disk image for its processor — Apple menu, About This Mac, says Chip for Apple silicon
 and Processor for Intel — open it, and drag Noctorium into Applications. The installers do the same and
@@ -291,7 +351,8 @@ A Mac has `shasum` rather than `sha256sum`; one file at a time, with its line fr
 grep -- '-macos-arm64.dmg$' SHA256SUMS.txt | shasum -a 256 -c
 ```
 
-The APK is signed with Noctorium's release key, certificate SHA-256 fingerprint:
+The APK is signed with Noctorium's release key, and so is Noctorium Stats' — `stats.yml` checks its
+certificate against the key before it is published — certificate SHA-256 fingerprint:
 
 ```
 46:CF:8B:96:C4:37:49:7A:93:AF:76:2B:91:94:AD:11:09:5D:D6:4A:B6:AB:EA:E9:60:C0:A5:98:C5:63:49:ED
@@ -302,18 +363,22 @@ will not replace it with a release-signed one.
 
 ## Cutting a release
 
-The same tag goes on all three repositories, applications first:
+The same tag goes on every repository the release is built from, applications first:
 
 ```bash
-for repo in Noctorium-Desktop Noctorium-Mobile Noctorium-Installer; do
+for repo in Noctorium-Desktop Noctorium-Mobile Noctorium-cli Noctorium-Stats-Desktop Noctorium-Stats-Mobile Noctorium-Installer; do
   git -C ../$repo tag v1.2.3 && git -C ../$repo push origin v1.2.3
 done
 ```
 
-The one on this repository is what starts the build, so it goes last. The other two are what the build
-checks out: `.github/workflows/release.yml` takes Noctorium-Desktop and Noctorium-Mobile **at that same
-tag**, each with the Noctorium-Base commit it pins, runs the tests, packages each platform on its own
-runner, and opens a **draft** release with everything attached and the checksums beside it. It is a draft
+The one on this repository is what starts the build, so it goes last. The others are what the build
+checks out: `.github/workflows/release.yml` takes each of them **at that same tag**, the player's with the
+Noctorium-Base commit it pins, runs the tests, packages each platform on its own runner, and opens a
+**draft** release with everything attached and the checksums beside it. Noctorium Stats is built by
+`.github/workflows/stats.yml`: the desktop program on Windows, Linux and both kinds of Mac, each archive
+opened again and checked to be named and shaped as the installers expect, and the APK signed with the same
+key as Noctorium's. The steps that build it are the stats repositories' READMEs', marked as such, so a
+change to how either is built is one step to change. It is a draft
 on purpose — read it, check the files are the sizes you expect, write the notes, and publish it yourself.
 
 Tagging only this repository fails in the first minute, and the message does not say why: the checkout of
@@ -341,8 +406,9 @@ The Flatpak's manifest builds mpv 0.41 itself, with libplacebo and libass under 
 own FFmpeg: audio out through PulseAudio, and every video output, script engine and disc reader switched
 off. Nothing is compiled for the other formats. `stage-*` artifacts are never attached to a release.
 
-`.github/workflows/packaging.yml` runs all of it — the Linux formats and both PC installers — without the
-tests, the Windows installer, the APK or a release. Push a branch named `packaging/<anything>`, or run it
+`.github/workflows/packaging.yml` runs all of it — the Linux formats, everything for the Mac, both PC
+installers and all of Noctorium Stats — without the tests, the Windows installer, Noctorium's APK or a
+release. Push a branch named `packaging/<anything>`, or run it
 by hand with a branch or commit of Noctorium-Desktop; the files are attached to the run.
 
 ### What the workflow needs
@@ -350,7 +416,7 @@ by hand with a branch or commit of Noctorium-Desktop; the files are attached to 
 | Secret | What it is |
 | --- | --- |
 | `ANDROID_KEYSTORE_BASE64` | The release keystore, base64-encoded. |
-| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | What opens it. Without these the APK is signed with the debug key and the log says so. |
+| `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` | What opens it. Without these the APKs are signed with the debug key and the log says so. Noctorium Stats' APK is signed with the same four, handed to `stats.yml` with `secrets: inherit`. |
 
 Nothing else. Every application repository is public, so the job's own token checks each of them out along
 with the `base/` submodule that pins its core.
@@ -377,6 +443,7 @@ installed; a release without one is refused with a link to the page instead.
 | Arch package, AppImage, Flatpak | Told there is an update, and sent to the release page — or run the installer again |
 | Android | Downloads the APK and hands it to Android's package installer, which asks again |
 | Unzipped folder, or Gradle | Told there is an update, and sent to the release page |
+| Noctorium Stats | Run the installer again, which replaces it whole; on a phone, the phone installer's Stats button |
 
 ## The three shapes of the version
 
