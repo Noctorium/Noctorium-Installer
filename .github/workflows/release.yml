@@ -29,7 +29,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.13.0'
+        default: '0.13.1'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
