@@ -128,8 +128,10 @@ jobs:
     name: Arch Linux package
     needs: packages
     runs-on: ubuntu-latest
-    # makepkg and pacman are Arch's own and are not packaged for Ubuntu, so this runs in Arch.
-    container: archlinux:base-devel
+    # makepkg and pacman are Arch's own and are not packaged for Ubuntu, so this runs in Arch. Arch's official
+    # image, from GitHub's registry rather than Docker Hub: Docker Hub limits pulls by address, and runners share
+    # addresses, so a release once failed three times running on "toomanyrequests" before it built anything.
+    container: ghcr.io/archlinux/archlinux:base-devel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
