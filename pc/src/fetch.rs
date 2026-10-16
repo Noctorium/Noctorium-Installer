@@ -11,10 +11,12 @@
 
 use crate::github::Problem;
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Sent on every request. GitHub refuses a request with no user agent outright.
@@ -38,18 +40,30 @@ pub fn repository() -> String {
 /// deadline to connect and to go on hearing from the other end. Without one, a connection that goes quiet
 /// part of the way through three hundred megabytes waits forever, with the progress bar stopped where it
 /// was; with one, it fails after a minute of silence, and the download carries on from where it got to.
+///
+/// ureq keeps one idle connection to each host unless told otherwise. A download in pieces hands back as
+/// many as it has open each time a piece is whole, and every one kept is a handshake the next piece does
+/// not have to make. All three products at once is at most [CONNECTIONS] each, to the one CDN.
 fn agent() -> &'static ureq::Agent {
     static SHARED: OnceLock<ureq::Agent> = OnceLock::new();
     SHARED.get_or_init(|| {
         ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(30))
             .timeout_read(Duration::from_secs(60))
+            .max_idle_connections_per_host(3 * CONNECTIONS as usize)
+            .max_idle_connections(4 * CONNECTIONS as usize)
             .build()
     })
 }
 
+/// A request with nothing of this program's but its name: for an address GitHub redirected to, which
+/// is signed already and would refuse the token [request] adds.
+fn plain(url: &str) -> ureq::Request {
+    agent().get(url).set("User-Agent", AGENT)
+}
+
 fn request(url: &str) -> ureq::Request {
-    let mut request = agent().get(url).set("User-Agent", AGENT);
+    let mut request = plain(url);
     // Only ever read from the environment, never stored: this is how the installer reaches a private
     // repository, and how somebody who has been rate limited gets past it. ureq drops it when GitHub
     // redirects a download to its CDN, which would refuse a request that carried it.
@@ -142,21 +156,47 @@ pub fn ranges_path(destination: &Path) -> PathBuf {
     destination.with_file_name(name)
 }
 
-/// How many connections one big download is split across.
+/// How many connections one big download is split across, at most.
 ///
-/// Measured on a home connection, GitHub's release CDN gave each connection about 2 MB/s however fast
-/// the line was: the 60 MB Noctorium CLI took 24 to 30 seconds over one connection, 15 to 18 over two,
-/// 7.6 to 9.1 over four and 4.4 over eight, three times each. Four is most of that, and no more than a
-/// browser opens to one host -- and installing both products is two downloads of four.
-pub const CONNECTIONS: u64 = 4;
+/// GitHub's release CDN gives each connection about 2 MB/s however fast the line is, so until the line
+/// itself is full a download takes its size over the number of connections. Measured on a home
+/// connection: the 60 MB Noctorium CLI took 24 to 30 seconds over one connection, 7.6 to 9.1 over four
+/// and 4.4 over eight; the 347 MB Windows package of 0.17.1 took 134 seconds over one, 42 to 50 over
+/// four, 21 to 23 over eight, 11 over sixteen, and 7.5 to 7.7 over twenty-four, where that line -- about
+/// 45 MB/s -- was full. Thirty-two and forty-eight were no faster, and less even from one try to the
+/// next. Sixteen is two thirds of the way on a line like that and all of it on any line slower than
+/// about 250 Mbit/s, and it is as many as download managers open to one server.
+pub const CONNECTIONS: u64 = 16;
 
 /// Below this a file comes down in one piece. A few seconds on any connection, and splitting it would
 /// spend most of them asking.
 pub const SPLIT_FROM: u64 = 16 * 1_048_576;
 
+/// How many pieces each connection is given, roughly, of a big download. More pieces than connections,
+/// so that one that happens to be slow fetches fewer of them instead of being the one everything waits
+/// for at the end: each connection takes the next piece still to come as soon as it has finished one.
+const PIECES_PER_CONNECTION: u64 = 3;
+
+/// The smallest piece worth a request of its own: two seconds at the CDN's pace, against the round trip
+/// that asking for it costs.
+const SMALLEST_PIECE: u64 = 4 * 1_048_576;
+
+/// How a file of [size] bytes is split: over how many connections at most, and into pieces of how many
+/// bytes at most. The Windows package is about forty-eight pieces of 7 MB over [CONNECTIONS]; the
+/// Noctorium CLI sixteen of 4 MB; anything under [SPLIT_FROM] one piece over one connection.
+pub fn split_for(size: u64) -> (u64, u64) {
+    if size < SPLIT_FROM {
+        return (1, size.max(1));
+    }
+    let piece = size
+        .div_ceil(CONNECTIONS * PIECES_PER_CONNECTION)
+        .max(SMALLEST_PIECE);
+    (CONNECTIONS.min(size.div_ceil(piece)), piece)
+}
+
 /// Puts the release's file [name] in [directory], checked against [published], and says where it is and
 /// how it got there -- calling [progress] with the bytes so far and the total expected. A big file comes
-/// down over [CONNECTIONS] at once; see [download_with].
+/// down in pieces over [CONNECTIONS] at once, as [split_for] says; see [download_with].
 pub fn download(
     url: &str,
     directory: &Path,
@@ -165,11 +205,7 @@ pub fn download(
     published: &str,
     progress: impl FnMut(u64, u64),
 ) -> Result<(PathBuf, Fetched), Problem> {
-    let connections = if expected_size >= SPLIT_FROM {
-        CONNECTIONS
-    } else {
-        1
-    };
+    let (connections, piece) = split_for(expected_size);
     download_with(
         url,
         directory,
@@ -177,11 +213,12 @@ pub fn download(
         expected_size,
         published,
         connections,
+        piece,
         progress,
     )
 }
 
-/// [download], over as many as [connections] at once.
+/// [download], over as many as [connections] at once, in pieces of at most [piece] bytes.
 ///
 /// Nothing is fetched that is already here. A file of that name from an earlier run that hashes to the
 /// published checksum is used as it is; one that does not is not that file, and is removed. A
@@ -192,8 +229,12 @@ pub fn download(
 /// of this file at all.
 ///
 /// Over one connection the hash is computed while the bytes go past. Over several they arrive out of
-/// order, so the file is read back once it is whole -- a fifth of a second for three hundred megabytes,
-/// most of it still in memory, against the half a minute or more the extra connections save.
+/// order, but the pieces are handed out from the start of the file onwards, so the stretch from its
+/// first byte that is whole keeps growing behind them, and that is read back and hashed as it grows,
+/// while it is still in memory. What is left to hash when the last piece arrives is the last few pieces
+/// rather than the whole file: on a Ryzen 5 7600 the 347 MB package hashed in 0.19 s read back whole,
+/// and slower processors without SHA instructions take seconds.
+#[allow(clippy::too_many_arguments)]
 pub fn download_with(
     url: &str,
     directory: &Path,
@@ -201,6 +242,7 @@ pub fn download_with(
     expected_size: u64,
     published: &str,
     connections: u64,
+    piece: u64,
     mut progress: impl FnMut(u64, u64),
 ) -> Result<(PathBuf, Fetched), Problem> {
     let destination = directory.join(name);
@@ -225,18 +267,29 @@ pub fn download_with(
         fs::remove_file(&destination).map_err(|e| local("clear away", &destination, e))?;
     }
 
-    let split = connections > 1 && expected_size > 0;
+    let piece = piece.max(1);
+    let split = expected_size > 0 && (connections > 1 || piece < expected_size);
+    let source = Source::new(url);
     let mut left = left_behind(&partial, &record, expected_size);
     loop {
         let attempt = match (&left, split) {
-            (Left::Ranges(ranges), true) => {
-                fetch_ranges(url, &partial, &record, ranges.clone(), &mut progress)
-            }
-            (Left::Prefix(have), true) => fetch_ranges(
-                url,
+            // A note an earlier run left is carried on from in pieces of today's size, however it was
+            // split then, so that a download stopped half way comes back over as many connections as a
+            // fresh one.
+            (Left::Ranges(ranges), true) => fetch_ranges(
+                &source,
                 &partial,
                 &record,
-                Ranges::fresh(expected_size, connections, *have),
+                ranges.clone().subdivided(piece),
+                connections,
+                &mut progress,
+            ),
+            (Left::Prefix(have), true) => fetch_ranges(
+                &source,
+                &partial,
+                &record,
+                Ranges::fresh(expected_size, piece, *have),
+                connections,
                 &mut progress,
             ),
             (Left::Ranges(ranges), false) => {
@@ -369,9 +422,32 @@ impl Part {
 /// What the note of ranges starts with, so that a file that happens to have its name is not read as one.
 const RANGES_HEADER: &str = "noctorium-installer ranges 1";
 
+/// The bytes from [from] to [to], none of them there yet, in as few pieces of at most [piece] bytes as
+/// will hold them, and as even as they come.
+fn pieces(from: u64, to: u64, piece: u64) -> Vec<Part> {
+    let length = to.saturating_sub(from);
+    if length == 0 {
+        return Vec::new();
+    }
+    let share = length.div_ceil(length.div_ceil(piece.max(1)));
+    let mut parts = Vec::new();
+    let mut start = from;
+    while start < to {
+        let end = (start + share).min(to);
+        parts.push(Part {
+            start,
+            end,
+            done: 0,
+        });
+        start = end;
+    }
+    parts
+}
+
 impl Ranges {
-    /// [total] bytes split into [count] pieces, after a first one of [have] bytes that is there already.
-    fn fresh(total: u64, count: u64, have: u64) -> Ranges {
+    /// [total] bytes in pieces of at most [piece] bytes, after a first one of [have] bytes that is there
+    /// already.
+    fn fresh(total: u64, piece: u64, have: u64) -> Ranges {
         let have = have.min(total);
         let mut parts = Vec::new();
         if have > 0 {
@@ -381,18 +457,33 @@ impl Ranges {
                 done: have,
             });
         }
-        let share = (total - have).div_ceil(count.max(1)).max(1);
-        let mut start = have;
-        while start < total {
-            let end = (start + share).min(total);
-            parts.push(Part {
-                start,
-                end,
-                done: 0,
-            });
-            start = end;
-        }
+        parts.extend(pieces(have, total, piece));
         Ranges { total, parts }
+    }
+
+    /// The same, with whatever is still to come of each piece cut into pieces of at most [piece] bytes:
+    /// what has arrived of a piece stays a piece of its own, whole, and the rest of it comes after.
+    fn subdivided(self, piece: u64) -> Ranges {
+        let mut parts = Vec::new();
+        for part in self.parts {
+            if part.length() - part.done <= piece {
+                parts.push(part);
+                continue;
+            }
+            let from = part.start + part.done;
+            if part.done > 0 {
+                parts.push(Part {
+                    start: part.start,
+                    end: from,
+                    done: part.done,
+                });
+            }
+            parts.extend(pieces(from, part.end, piece));
+        }
+        Ranges {
+            total: self.total,
+            parts,
+        }
     }
 
     fn have(&self) -> u64 {
@@ -469,14 +560,76 @@ enum Piece {
     Ended(Result<(), Split>),
 }
 
-/// Fetches whatever [ranges] says is still missing from [partial], each piece on a connection of its
-/// own, keeping the note at [record] up to date as they go, and returns what the whole file hashes to and
-/// how much of it was there before.
+/// Where the pieces of one download are asked for.
+///
+/// A release file's address is github.com's, and github.com answers every request for it with a
+/// redirect to its CDN: a round trip to github.com before each piece can start, and on a connection of
+/// its own a handshake with github.com as well. The first answer says where the redirect landed, and the
+/// pieces after it are asked for there directly. That address is signed, and expires -- an hour after
+/// GitHub signed it, as it signs them now -- so anything but an answer from it sends the next request
+/// to github.com again, which signs a fresh one.
+struct Source<'a> {
+    url: &'a str,
+    landed: Mutex<Option<String>>,
+}
+
+impl<'a> Source<'a> {
+    fn new(url: &'a str) -> Source<'a> {
+        Source {
+            url,
+            landed: Mutex::new(None),
+        }
+    }
+
+    /// Asks for the bytes [range] says, which is all that is ever asked of a [Source]. A server that
+    /// cannot give that range is one that will not split the file.
+    fn get(&self, range: &str) -> Result<ureq::Response, Split> {
+        let landed = self.landed.lock().map(|l| l.clone()).unwrap_or(None);
+        if let Some(direct) = landed {
+            match plain(&direct).set("Range", range).call() {
+                Ok(response) => return Ok(response),
+                // The file's own answer, wherever it is asked.
+                Err(ureq::Error::Status(416, _)) => return Err(Split::NotOffered),
+                Err(_) => {
+                    if let Ok(mut landed) = self.landed.lock() {
+                        if landed.as_deref() == Some(direct.as_str()) {
+                            *landed = None;
+                        }
+                    }
+                }
+            }
+        }
+        let response = match request(self.url).set("Range", range).call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(416, _)) => return Err(Split::NotOffered),
+            Err(other) => return Err(Split::Failed(problem(other))),
+        };
+        if response.get_url() != self.url {
+            if let Ok(mut landed) = self.landed.lock() {
+                *landed = Some(response.get_url().to_string());
+            }
+        }
+        Ok(response)
+    }
+}
+
+/// Fetches whatever [ranges] says is still missing from [partial] over as many as [connections] at once,
+/// keeping the note at [record] up to date as they go, and returns what the whole file hashes to and how
+/// much of it was there before.
+///
+/// The pieces wait in order, and each connection takes the first of them still waiting as soon as it is
+/// free, so the file fills from the front. The coordinating thread hashes the stretch from the first
+/// byte that is whole as it grows, a few megabytes at a time, and once the last piece is in only what
+/// came after that stretch is left to read.
+///
+/// A piece that fails stops any more from being started, and once the ones on their way have finished
+/// or failed too, the first failure is what is returned -- with everything that did arrive in the note.
 fn fetch_ranges(
-    url: &str,
+    source: &Source,
     partial: &Path,
     record: &Path,
     mut ranges: Ranges,
+    connections: u64,
     progress: &mut impl FnMut(u64, u64),
 ) -> Result<(String, u64), Split> {
     let failed = |what: &str, e: std::io::Error| {
@@ -501,20 +654,37 @@ fn fetch_ranges(
         .map_err(|e| failed("keep track of", e))?;
     progress(before, total);
 
+    let mut reading = File::open(partial).map_err(|e| failed("read", e))?;
+    let mut hasher = Sha256::new();
+    let mut hashed = 0u64;
+
+    // Each piece as it was when this started, which is where its connection starts it from.
+    let parts = ranges.parts.clone();
+    let waiting: VecDeque<usize> = (0..parts.len())
+        .filter(|&index| parts[index].done < parts[index].length())
+        .collect();
+    let workers = connections.max(1).min(waiting.len() as u64);
+    let waiting = Mutex::new(waiting);
+    let stop = AtomicBool::new(false);
     let mut first_failure: Option<Split> = None;
     std::thread::scope(|scope| {
         let (tell, heard) = std::sync::mpsc::channel::<Piece>();
-        for (index, part) in ranges.parts.iter().copied().enumerate() {
-            if part.done == part.length() {
-                continue;
-            }
+        for _ in 0..workers {
             let tell = tell.clone();
+            let (parts, waiting, stop) = (&parts, &waiting, &stop);
             scope.spawn(move || {
-                let report = tell.clone();
-                let outcome = fetch_part(url, partial, part, |done| {
-                    let _ = report.send(Piece::Arrived(index, done));
-                });
-                let _ = tell.send(Piece::Ended(outcome));
+                while !stop.load(Ordering::Relaxed) {
+                    let next = waiting.lock().ok().and_then(|mut w| w.pop_front());
+                    let Some(index) = next else { break };
+                    let report = tell.clone();
+                    let outcome = fetch_part(source, partial, parts[index], |done| {
+                        let _ = report.send(Piece::Arrived(index, done));
+                    });
+                    if outcome.is_err() {
+                        stop.store(true, Ordering::Relaxed);
+                    }
+                    let _ = tell.send(Piece::Ended(outcome));
+                }
             });
         }
         drop(tell);
@@ -534,9 +704,22 @@ fn fetch_ranges(
                         noted = have;
                         let _ = ranges.write(record);
                     }
+                    // Likewise the hash, which reads back what the pieces wrote while the system still has
+                    // it in memory.
+                    let whole = ranges.prefix();
+                    if first_failure.is_none() && whole - hashed >= 4 * 1_048_576 {
+                        match hash_span(&mut reading, &mut hasher, hashed, whole) {
+                            Ok(()) => hashed = whole,
+                            Err(e) => {
+                                stop.store(true, Ordering::Relaxed);
+                                first_failure = Some(failed("read", e));
+                            }
+                        }
+                    }
                 }
                 Piece::Ended(Ok(())) => {}
                 Piece::Ended(Err(why)) => {
+                    stop.store(true, Ordering::Relaxed);
                     // A server that will not split the file outranks a piece that failed: the answer to
                     // the first is to ask for it whole.
                     if first_failure.is_none() || matches!(why, Split::NotOffered) {
@@ -552,14 +735,27 @@ fn fetch_ranges(
         return Err(why);
     }
     progress(total, total);
-    let digest = hash_file(partial).map_err(Split::Failed)?;
-    Ok((digest, before))
+    hash_span(&mut reading, &mut hasher, hashed, total).map_err(|e| failed("read", e))?;
+    Ok((hex(&hasher.finalize()), before))
+}
+
+/// Feeds bytes [from] to [to] of [file] through [hasher], all of them or an error.
+fn hash_span(file: &mut File, hasher: &mut Sha256, from: u64, to: u64) -> std::io::Result<()> {
+    file.seek(SeekFrom::Start(from))?;
+    let read = feed(hasher, &mut file.take(to - from))?;
+    if read != to - from {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "it is shorter than what had arrived",
+        ));
+    }
+    Ok(())
 }
 
 /// Fetches the rest of one piece into its place in [partial], saying how much of it has arrived as it
 /// goes -- only once it is written, so that the note never claims what the file does not have.
 fn fetch_part(
-    url: &str,
+    source: &Source,
     partial: &Path,
     part: Part,
     mut arrived: impl FnMut(u64),
@@ -578,14 +774,7 @@ fn fetch_part(
     let mut buffer = vec![0u8; 128 * 1024];
     for attempt in 1..=ATTEMPTS {
         let from = part.start + done;
-        let response = match request(url)
-            .set("Range", &format!("bytes={from}-{}", part.end - 1))
-            .call()
-        {
-            Ok(response) => response,
-            Err(ureq::Error::Status(416, _)) => return Err(Split::NotOffered),
-            Err(other) => return Err(Split::Failed(problem(other))),
-        };
+        let response = source.get(&format!("bytes={from}-{}", part.end - 1))?;
         let starts = response
             .header("Content-Range")
             .and_then(|range| range.trim().strip_prefix("bytes "))
@@ -597,13 +786,20 @@ fn fetch_part(
         file.seek(SeekFrom::Start(from))
             .map_err(|e| failed("write to", e))?;
         let mut out = BufWriter::with_capacity(1 << 20, &mut file);
-        // Never more than the piece, whatever the server sends: the next piece's bytes are not this one's
-        // to write.
-        let mut reader = response.into_reader().take(part.length() - done);
+        let mut reader = response.into_reader();
         let before = done;
         let mut written_since = 0u64;
         let stopped = loop {
-            match reader.read(&mut buffer) {
+            // Never more than the piece, whatever the server sends: the next piece's bytes are not this
+            // one's to write.
+            let room = (part.length() - done).min(buffer.len() as u64) as usize;
+            if room == 0 {
+                // One more read, which a server that sent what was asked answers with nothing: that is
+                // what hands the connection back to be used for the next piece, rather than closed.
+                let _ = reader.read(&mut buffer[..1]);
+                break None;
+            }
+            match reader.read(&mut buffer[..room]) {
                 Ok(0) => break None,
                 Ok(read) => {
                     out.write_all(&buffer[..read])
@@ -816,7 +1012,8 @@ pub(crate) mod tests {
     use crate::archive::tests::scratch;
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
 
     #[test]
     fn the_repository_can_be_pointed_elsewhere_but_defaults_to_ours() {
@@ -851,39 +1048,63 @@ pub(crate) mod tests {
         AlwaysCutAfter(usize),
         /// Ranges, a little at a time, as a slow connection does, so two downloads overlap.
         Slowly,
+        /// As github.com does: the file's address answered with a redirect to another, where the file
+        /// is served slowly, in ranges.
+        Redirects,
+        /// Redirects, each to an address of its own that is refused once it has served this many
+        /// requests, as a signed address that has expired is.
+        RedirectsExpiringAfter(usize),
     }
 
-    /// Every request's range: its first byte, and its last when it said.
-    type Asked = Mutex<Vec<(Option<u64>, Option<u64>)>>;
+    /// What the server writes down.
+    #[derive(Default)]
+    struct Log {
+        /// Every request for the file's bytes: its first byte, and its last when it said.
+        asked: Mutex<Vec<(Option<u64>, Option<u64>)>>,
+        /// The path of every request, redirects and all, in the order they came.
+        paths: Mutex<Vec<String>>,
+        /// How many requests are being answered now, and the most there have been at once. A request
+        /// stops counting just before the last of its answer is sent, since the client can only ask for
+        /// the next piece once it has that -- counted to the end, one being finished would overlap the
+        /// next one on the same connection, and a client keeping to its limit would seem not to.
+        busy: AtomicUsize,
+        most: AtomicUsize,
+        /// For an expiring redirect: which address is the current one, and how many it has served.
+        signed: Mutex<(usize, usize)>,
+    }
 
     /// A web server on this machine serving [body], each connection on a thread of its own as a CDN
     /// would, which writes down the Range of every request it was sent: where it started, or `None` for
     /// a request for the whole file, and where it ended, when it said.
     pub(crate) struct Server {
         pub(crate) url: String,
-        asked: Arc<Asked>,
+        log: Arc<Log>,
     }
 
     impl Server {
         pub(crate) fn start(body: Vec<u8>, serves: Serves) -> Server {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
-            let asked = Arc::new(Mutex::new(Vec::new()));
-            let log = asked.clone();
+            let host = listener.local_addr().unwrap();
+            let url = format!("http://{host}/file.bin");
+            let log = Arc::new(Log::default());
+            let shared = log.clone();
             let body = Arc::new(body);
             std::thread::spawn(move || {
                 for (index, stream) in listener.incoming().enumerate() {
                     let Ok(stream) = stream else { return };
-                    let (log, body) = (log.clone(), body.clone());
-                    std::thread::spawn(move || answer(stream, index, &body, serves, &log));
+                    let (log, body) = (shared.clone(), body.clone());
+                    std::thread::spawn(move || {
+                        answer(stream, index, &body, serves, &log, &host.to_string())
+                    });
                 }
             });
-            Server { url, asked }
+            Server { url, log }
         }
 
         /// Where each request started, in the order they came.
         pub(crate) fn asked(&self) -> Vec<Option<u64>> {
-            self.asked
+            self.log
+                .asked
                 .lock()
                 .unwrap()
                 .iter()
@@ -893,9 +1114,21 @@ pub(crate) mod tests {
 
         /// Each request's range, first byte and last, in order of the first.
         pub(crate) fn ranges(&self) -> Vec<(Option<u64>, Option<u64>)> {
-            let mut ranges = self.asked.lock().unwrap().clone();
+            let mut ranges = self.log.asked.lock().unwrap().clone();
             ranges.sort();
             ranges
+        }
+
+        /// How many requests went to the file's own address, and how many anywhere else.
+        fn to_the_address_and_elsewhere(&self) -> (usize, usize) {
+            let paths = self.log.paths.lock().unwrap();
+            let direct = paths.iter().filter(|p| p.as_str() == "/file.bin").count();
+            (direct, paths.len() - direct)
+        }
+
+        /// The most requests it was answering at once.
+        fn most_at_once(&self) -> usize {
+            self.log.most.load(AtomicOrdering::SeqCst)
         }
     }
 
@@ -904,14 +1137,27 @@ pub(crate) mod tests {
         index: usize,
         body: &[u8],
         serves: Serves,
-        log: &Asked,
+        log: &Log,
+        host: &str,
     ) {
+        let now = log.busy.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        log.most.fetch_max(now, AtomicOrdering::SeqCst);
+        let mut answering = true;
+        let mut finished = || {
+            if std::mem::take(&mut answering) {
+                log.busy.fetch_sub(1, AtomicOrdering::SeqCst);
+            }
+        };
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let (mut from, mut to) = (None, None);
+        let mut path = String::new();
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
                 break;
+            }
+            if path.is_empty() {
+                path = line.split_whitespace().nth(1).unwrap_or("").to_string();
             }
             if let Some(range) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
                 let (first, last) = range.trim().split_once('-').unwrap_or((range.trim(), ""));
@@ -919,7 +1165,44 @@ pub(crate) mod tests {
                 to = last.parse::<u64>().ok();
             }
         }
-        log.lock().unwrap().push((from, to));
+        log.paths.lock().unwrap().push(path.clone());
+        let redirecting = matches!(
+            serves,
+            Serves::Redirects | Serves::RedirectsExpiringAfter(_)
+        );
+        if redirecting && path == "/file.bin" {
+            let signed = {
+                let mut signed = log.signed.lock().unwrap();
+                *signed = (signed.0 + 1, 0);
+                signed.0
+            };
+            finished();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://{host}/cdn/{signed}/file.bin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            return;
+        }
+        if let Serves::RedirectsExpiringAfter(uses) = serves {
+            let current = {
+                let mut signed = log.signed.lock().unwrap();
+                let current = path == format!("/cdn/{}/file.bin", signed.0) && signed.1 < uses;
+                if current {
+                    signed.1 += 1;
+                }
+                current
+            };
+            if !current {
+                finished();
+                let _ = stream.write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                return;
+            }
+        }
+        log.asked.lock().unwrap().push((from, to));
         let from = from.filter(|_| serves != Serves::AlwaysWhole);
         let start = from.unwrap_or(0) as usize;
         let end = to
@@ -928,6 +1211,7 @@ pub(crate) mod tests {
             .unwrap_or(body.len());
         let head = match from {
             Some(_) if start >= body.len() => {
+                finished();
                 let _ = stream.write_all(
                     b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
@@ -951,8 +1235,12 @@ pub(crate) mod tests {
             _ => {}
         }
         let _ = stream.write_all(head.as_bytes());
-        if serves == Serves::Slowly {
-            for chunk in rest.chunks(32 * 1024) {
+        if serves == Serves::Slowly || redirecting {
+            let chunks: Vec<&[u8]> = rest.chunks(32 * 1024).collect();
+            for (at, chunk) in chunks.iter().enumerate() {
+                if at + 1 == chunks.len() {
+                    finished();
+                }
                 if stream.write_all(chunk).is_err() {
                     break;
                 }
@@ -961,6 +1249,7 @@ pub(crate) mod tests {
         } else {
             let _ = stream.write_all(rest);
         }
+        finished();
     }
 
     /// Three megabytes and a bit that are not the same all the way through, so a byte out of place shows.
@@ -1212,11 +1501,29 @@ pub(crate) mod tests {
 
     // ------------------------------------------------------------ in pieces
 
+    /// [body] over [connections], one piece for each.
     fn in_pieces(
         here: &Path,
         url: &str,
         body: &[u8],
         connections: u64,
+    ) -> Result<(PathBuf, Fetched), Problem> {
+        in_pieces_of(
+            here,
+            url,
+            body,
+            connections,
+            (body.len() as u64).div_ceil(connections),
+        )
+    }
+
+    /// [body] over [connections], in pieces of at most [piece] bytes.
+    fn in_pieces_of(
+        here: &Path,
+        url: &str,
+        body: &[u8],
+        connections: u64,
+        piece: u64,
     ) -> Result<(PathBuf, Fetched), Problem> {
         download_with(
             url,
@@ -1225,6 +1532,7 @@ pub(crate) mod tests {
             body.len() as u64,
             &sha(body),
             connections,
+            piece,
             |_, _| {},
         )
     }
@@ -1242,6 +1550,7 @@ pub(crate) mod tests {
             body.len() as u64,
             &sha(&body),
             4,
+            800_000,
             |done, total| reports.push((done, total)),
         )
         .expect("downloads");
@@ -1378,7 +1687,7 @@ pub(crate) mod tests {
         let destination = here.join("file.bin");
         // A note for a file of another size, and then one that leaves a stretch out.
         fs::write(partial_path(&destination), vec![0u8; body.len()]).unwrap();
-        Ranges::fresh(body.len() as u64 + 1, 4, 0)
+        Ranges::fresh(body.len() as u64 + 1, 800_001, 0)
             .write(&ranges_path(&destination))
             .unwrap();
         assert_eq!(already_have(&destination, body.len() as u64), 0);
@@ -1397,10 +1706,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_file_is_split_into_even_pieces_after_what_is_there() {
-        let fresh = Ranges::fresh(10, 4, 0);
+        let fresh = Ranges::fresh(10, 3, 0);
         let spans: Vec<(u64, u64)> = fresh.parts.iter().map(|p| (p.start, p.end)).collect();
         assert_eq!(spans, vec![(0, 3), (3, 6), (6, 9), (9, 10)]);
-        let after = Ranges::fresh(10, 2, 4);
+        let after = Ranges::fresh(10, 3, 4);
         let part = |start, end, done| Part { start, end, done };
         assert_eq!(
             after.parts,
@@ -1413,5 +1722,158 @@ pub(crate) mod tests {
             1,
             "nothing left to fetch"
         );
+        // As even as they come, rather than full pieces and a scrap at the end.
+        let spans: Vec<(u64, u64)> = Ranges::fresh(10, 4, 0)
+            .parts
+            .iter()
+            .map(|p| (p.start, p.end))
+            .collect();
+        assert_eq!(spans, vec![(0, 4), (4, 8), (8, 10)]);
+    }
+
+    /// A note from a run that split the file in four, carried on in today's smaller pieces: what arrived
+    /// of each piece stays as it is, and only what is still to come is cut up.
+    #[test]
+    fn what_an_old_note_still_needs_is_cut_into_todays_pieces() {
+        let part = |start, end, done| Part { start, end, done };
+        let old = Ranges {
+            total: 400,
+            parts: vec![
+                part(0, 100, 100),
+                part(100, 200, 30),
+                part(200, 300, 95),
+                part(300, 400, 0),
+            ],
+        };
+        let new = old.subdivided(40);
+        assert_eq!(
+            new.parts,
+            vec![
+                part(0, 100, 100),
+                part(100, 130, 30),
+                part(130, 165, 0),
+                part(165, 200, 0),
+                part(200, 300, 95),
+                part(300, 334, 0),
+                part(334, 368, 0),
+                part(368, 400, 0),
+            ]
+        );
+        assert_eq!(new.have(), 225, "nothing that arrived is forgotten");
+        assert_eq!(new.prefix(), 130);
+    }
+
+    #[test]
+    fn the_split_is_chosen_by_the_size_of_the_file() {
+        // The Windows package of 0.17.1: three pieces for each of sixteen connections.
+        assert_eq!(split_for(346_804_140), (16, 7_225_087));
+        // The Noctorium CLI: pieces no smaller than four megabytes, one for each connection.
+        assert_eq!(split_for(64_253_579), (16, SMALLEST_PIECE));
+        // Just big enough to split: as many connections as there are pieces of that size.
+        assert_eq!(split_for(20_000_000), (5, SMALLEST_PIECE));
+        // Noctorium Stats, in one piece.
+        assert_eq!(split_for(3_737_317), (1, 3_737_317));
+        assert_eq!(split_for(0), (1, 1));
+    }
+
+    /// [length] bytes that are not the same all the way through.
+    fn body_of(length: u32) -> Vec<u8> {
+        (0..length).map(|i| (i * 7 + i / 251) as u8).collect()
+    }
+
+    #[test]
+    fn no_more_than_the_connections_are_open_at_once_however_many_pieces() {
+        let here = scratch("pieces-queue");
+        let body = body();
+        let server = Server::start(body.clone(), Serves::Slowly);
+        let (path, how) = in_pieces_of(&here, &server.url, &body, 3, 400_000).expect("downloads");
+        assert_eq!(how, Fetched::Downloaded);
+        assert_eq!(fs::read(path).unwrap(), body);
+        let starts: Vec<Option<u64>> = server.ranges().iter().map(|(from, _)| *from).collect();
+        assert_eq!(
+            starts,
+            (0..8).map(|i| Some(i * 400_000)).collect::<Vec<_>>(),
+            "every piece asked for once"
+        );
+        let most = server.most_at_once();
+        assert!(
+            (2..=3).contains(&most),
+            "{most} at once, of three connections"
+        );
+    }
+
+    /// Ten megabytes in twenty pieces, which is enough for the hash to be taken a few megabytes at a
+    /// time as the front of the file fills, and then the rest at the end: any byte hashed twice, or
+    /// missed, would fail the checksum.
+    #[test]
+    fn a_file_in_many_pieces_is_hashed_as_it_fills() {
+        let here = scratch("pieces-hashed");
+        let body = body_of(10_000_000);
+        let server = Server::start(body.clone(), Serves::Slowly);
+        let (path, how) = in_pieces_of(&here, &server.url, &body, 4, 512 * 1024).expect("checked");
+        assert_eq!(how, Fetched::Downloaded);
+        assert_eq!(fs::read(path).unwrap(), body);
+    }
+
+    /// The same carried on from a note that has whole pieces, half a piece and nothing scattered through
+    /// it, so that the stretch hashed from the front runs over pieces that were there before this run.
+    #[test]
+    fn a_file_carried_on_in_many_pieces_is_hashed_whole() {
+        let here = scratch("pieces-hashed-resume");
+        let body = body_of(10_000_000);
+        let destination = here.join("file.bin");
+        let mut partial = body.clone();
+        partial[1_500_000..3_000_000].fill(0);
+        partial[6_000_000..].fill(0);
+        fs::write(partial_path(&destination), &partial).unwrap();
+        let part = |start, end, done| Part { start, end, done };
+        Ranges {
+            total: 10_000_000,
+            parts: vec![
+                part(0, 1_000_000, 1_000_000),
+                part(1_000_000, 3_000_000, 500_000),
+                part(3_000_000, 6_000_000, 3_000_000),
+                part(6_000_000, 10_000_000, 0),
+            ],
+        }
+        .write(&ranges_path(&destination))
+        .unwrap();
+        let server = Server::start(body.clone(), Serves::Slowly);
+        let (path, how) = in_pieces_of(&here, &server.url, &body, 4, 512 * 1024).expect("checked");
+        assert_eq!(how, Fetched::Resumed { from: 4_500_000 });
+        assert_eq!(fs::read(path).unwrap(), body);
+        assert!(
+            server.asked().iter().all(|from| from.unwrap() >= 1_500_000),
+            "nothing that was there asked for again: {:?}",
+            server.ranges()
+        );
+    }
+
+    #[test]
+    fn pieces_after_the_first_go_straight_to_where_github_redirected() {
+        let here = scratch("pieces-redirect");
+        let body = body();
+        let server = Server::start(body.clone(), Serves::Redirects);
+        let (path, _) = in_pieces_of(&here, &server.url, &body, 2, 400_000).expect("downloads");
+        assert_eq!(fs::read(path).unwrap(), body);
+        let (direct, elsewhere) = server.to_the_address_and_elsewhere();
+        assert!(
+            (1..=2).contains(&direct),
+            "only the first pieces went by way of the redirect: {direct}"
+        );
+        assert_eq!(elsewhere, 8, "and every piece came from where it pointed");
+    }
+
+    /// Six pieces one after another, from an address that serves two requests and then refuses: each
+    /// time, the file's own address is asked again, and points somewhere fresh.
+    #[test]
+    fn an_address_that_has_expired_is_asked_for_again_at_github() {
+        let here = scratch("pieces-expired");
+        let body = body();
+        let server = Server::start(body.clone(), Serves::RedirectsExpiringAfter(2));
+        let (path, _) = in_pieces_of(&here, &server.url, &body, 1, 533_334).expect("downloads");
+        assert_eq!(fs::read(path).unwrap(), body);
+        assert_eq!(server.asked().len(), 6, "each piece served once");
+        assert_eq!(server.to_the_address_and_elsewhere().0, 3);
     }
 }

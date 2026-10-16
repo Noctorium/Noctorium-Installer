@@ -12,11 +12,18 @@
 //! each as asked. It goes through the library's download, checksums and all, into a folder that is
 //! emptied before every round so that nothing is found from the last.
 //!
+//! The fifth is one file of a real release the same way, over as many connections as asked and in as
+//! many pieces for each: one piece each is the file split evenly, three is what the installer does.
+//! And the sixth is the asking before any of that: the latest release and its checksums, which is what
+//! the installer waits for before it can show anything.
+//!
 //! ```text
 //! cargo run --release --example bench -- hash FILE [ROUNDS]
 //! cargo run --release --example bench -- unpack ARCHIVE [ROUNDS]
 //! cargo run --release --example bench -- download URL CONNECTIONS [ROUNDS]
 //! cargo run --release --example bench -- both VERSION FOLDER CONNECTIONS one-by-one|at-once [ROUNDS]
+//! cargo run --release --example bench -- one VERSION NAME FOLDER CONNECTIONS PIECES_EACH [ROUNDS]
+//! cargo run --release --example bench -- look [ROUNDS]
 //! ```
 //!
 //! Nothing it writes outlives it but the file it was asked to hash, which is the caller's, and what it
@@ -85,10 +92,77 @@ fn main() {
             };
             both(version, &folder, connections, at_once, rounds(5));
         }
+        Some("look") => {
+            // What the installer asks before it shows anything: the release and its checksums.
+            let times = (0..rounds(1))
+                .map(|_| {
+                    let started = Instant::now();
+                    noctorium_installer::flow::look(None)
+                        .unwrap_or_else(|problem| panic!("{problem}"));
+                    started.elapsed()
+                })
+                .collect();
+            report("look", 0, times);
+        }
+        Some("one") => {
+            let usage = "one VERSION NAME FOLDER CONNECTIONS PIECES_EACH [ROUNDS]";
+            let version = arguments.get(1).expect(usage);
+            let name = arguments.get(2).expect(usage);
+            let folder = PathBuf::from(arguments.get(3).expect(usage));
+            let connections: u64 = arguments.get(4).and_then(|c| c.parse().ok()).expect(usage);
+            let each: u64 = arguments.get(5).and_then(|c| c.parse().ok()).expect(usage);
+            one(version, name, &folder, connections, each, rounds(6));
+        }
         _ => eprintln!(
-            "bench hash FILE [ROUNDS] | bench unpack ARCHIVE [ROUNDS] | bench download URL CONNECTIONS [ROUNDS] | bench both VERSION FOLDER CONNECTIONS one-by-one|at-once [ROUNDS]"
+            "bench hash FILE [ROUNDS] | bench unpack ARCHIVE [ROUNDS] | bench download URL CONNECTIONS [ROUNDS] | bench both VERSION FOLDER CONNECTIONS one-by-one|at-once [ROUNDS] | bench one VERSION NAME FOLDER CONNECTIONS PIECES_EACH [ROUNDS]"
         ),
     }
+}
+
+/// The file [name] of release [version], downloaded and checked [rounds] times over [connections], in
+/// [each] pieces for every connection.
+fn one(version: &str, name: &str, folder: &Path, connections: u64, each: u64, rounds: usize) {
+    use noctorium_installer::flow;
+    use noctorium_installer::github::published_checksum;
+    let found = flow::look(Some(version)).unwrap_or_else(|problem| panic!("{problem}"));
+    let asset = found
+        .release
+        .assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .unwrap_or_else(|| panic!("no {name} in {version}"));
+    let published = found
+        .checksums
+        .as_deref()
+        .and_then(|sums| published_checksum(sums, name))
+        .expect("no checksum for it");
+    let piece = asset.size.div_ceil(connections * each).max(1);
+    let mut times = Vec::new();
+    for _ in 0..rounds {
+        let _ = std::fs::remove_dir_all(folder);
+        std::fs::create_dir_all(folder).expect("could not make the folder");
+        let started = Instant::now();
+        noctorium_installer::fetch::download_with(
+            &asset.url,
+            folder,
+            name,
+            asset.size,
+            &published,
+            connections,
+            piece,
+            |_, _| {},
+        )
+        .unwrap_or_else(|problem| panic!("{problem}"));
+        let took = started.elapsed();
+        println!("  round: {:.1}s", took.as_secs_f64());
+        times.push(took);
+    }
+    let _ = std::fs::remove_dir_all(folder);
+    report(
+        &format!("{name}, x{connections}, {each} pieces each"),
+        asset.size,
+        times,
+    );
 }
 
 /// Both products of release [version], for this machine, downloaded and checked [rounds] times.
@@ -113,6 +187,8 @@ fn both(version: &str, folder: &Path, connections: u64, at_once: bool, rounds: u
             item.asset.size,
             &item.published,
             connections,
+            // One piece for each connection, as the installer split them when this was written.
+            item.asset.size.div_ceil(connections).max(1),
             |_, _| {},
         )
         .unwrap_or_else(|problem| panic!("{problem}"));
