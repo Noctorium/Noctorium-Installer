@@ -133,9 +133,10 @@ saying how much it is to download, or that this release does not have it yet —
 and at the end how to start each one. On Linux the window has one more row, for the format, which starts
 on whatever this machine would pick.
 
-Everything chosen downloads at once, a big file over four connections — on the line this was measured on,
-GitHub's CDN gave each connection about 2 MB/s, and both products came down in 40 seconds rather than
-190 — and each is installed as soon as its own download is checked: the Noctorium CLI, a fifth of the
+Everything chosen downloads at once, a big file in pieces over sixteen connections — GitHub's CDN gives
+each connection about 2 MB/s, and on the line this was measured on Noctorium and the CLI of 0.17.1 came
+down together in 11 seconds, against 48 over four connections each, and Noctorium alone takes over two
+minutes over one — and each is installed as soon as its own download is checked: the Noctorium CLI, a fifth of the
 size, is in while Noctorium is still coming down. A download is kept, under `noctorium-installer` in the temporary folder, until it has been
 installed. A run that is stopped part of the way carries on from where it got to, with Range requests,
 and one whose install was cancelled finds the file whole and uses it, once it has checked it against
