@@ -9,6 +9,9 @@ pub struct Asset {
     pub name: String,
     pub url: String,
     pub size: u64,
+    /// What the file hashes to, as SHA-256 in lower-case hex, when GitHub says: it has for every file
+    /// uploaded since 2025, and older ones have none.
+    pub digest: Option<String>,
 }
 
 impl Asset {
@@ -299,6 +302,12 @@ impl Release {
                     name: asset.get("name")?.as_str()?.to_string(),
                     url: asset.get("browser_download_url")?.as_str()?.to_string(),
                     size: asset.get("size").and_then(Value::as_u64).unwrap_or(0),
+                    digest: asset
+                        .get("digest")
+                        .and_then(Value::as_str)
+                        .and_then(|digest| digest.strip_prefix("sha256:"))
+                        .filter(|hex| hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+                        .map(str::to_ascii_lowercase),
                 })
             })
             .collect();
@@ -451,6 +460,33 @@ mod tests {
 
     fn picked(release: &Release, wanted: Wanted, arch: Arch) -> Option<&str> {
         release.asset_for(wanted, arch).map(|a| a.name.as_str())
+    }
+
+    #[test]
+    fn reads_the_hash_github_gives_each_file_when_it_gives_one() {
+        let release = Release::from_json(
+            r#"{"tag_name": "v1.0.0", "assets": [
+              {"name": "a", "browser_download_url": "u", "size": 1,
+               "digest": "sha256:C4D82910EF51A6FCF7FD081A290F6B9DAF06BE246FC2BD952A44BACF3DCDEDF3"},
+              {"name": "b", "browser_download_url": "u", "size": 1, "digest": null},
+              {"name": "c", "browser_download_url": "u", "size": 1, "digest": "md5:0cc175b9c0f1b6a831c399e269772661"},
+              {"name": "d", "browser_download_url": "u", "size": 1, "digest": "sha256:not-a-hash"},
+              {"name": "e", "browser_download_url": "u", "size": 1}
+            ]}"#,
+        )
+        .expect("should parse");
+        let digests: Vec<Option<&str>> =
+            release.assets.iter().map(|a| a.digest.as_deref()).collect();
+        assert_eq!(
+            digests,
+            vec![
+                Some("c4d82910ef51a6fcf7fd081a290f6b9daf06be246fc2bd952a44bacf3dcdedf3"),
+                None,
+                None,
+                None,
+                None
+            ]
+        );
     }
 
     #[test]

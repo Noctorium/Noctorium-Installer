@@ -115,6 +115,21 @@ pub fn release(tag: Option<&str>) -> Result<String, Problem> {
     }
 }
 
+/// Where a release's SHA256SUMS.txt is, without asking the API where: by its tag, or for the latest
+/// release by the word that GitHub redirects to whichever release that is.
+pub fn checksums_address(tag: Option<&str>) -> String {
+    match tag {
+        None => format!(
+            "https://github.com/{}/releases/latest/download/SHA256SUMS.txt",
+            repository()
+        ),
+        Some(tag) => format!(
+            "https://github.com/{}/releases/download/{tag}/SHA256SUMS.txt",
+            repository()
+        ),
+    }
+}
+
 /// A small file, read whole. Used for the checksums.
 pub fn text(url: &str) -> Result<String, Problem> {
     send(url)?
@@ -990,6 +1005,11 @@ fn feed(hasher: &mut Sha256, reader: &mut impl Read) -> std::io::Result<u64> {
         hasher.update(&buffer[..read]);
         count += read as u64;
     }
+}
+
+/// What [bytes] hash to, written as sha256sum writes it.
+pub fn hash_of(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 /// What the file at [path] hashes to, written as sha256sum writes it.

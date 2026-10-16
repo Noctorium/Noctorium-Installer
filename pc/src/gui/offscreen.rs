@@ -261,6 +261,7 @@ fn release(stats: bool) -> Release {
         name: name.into(),
         url: format!("https://example.test/{name}"),
         size,
+        digest: None,
     };
     let mut assets = vec![
         asset("Noctorium-0.9.1-windows-x64.msi", 343_048_105),
