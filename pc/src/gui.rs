@@ -97,6 +97,7 @@ struct Wanted {
     desktop: bool,
     cli: bool,
     stats: bool,
+    rust: bool,
     /// The .msi's own wizard, for choosing the folder. Windows only.
     wizard: bool,
 }
@@ -107,6 +108,7 @@ impl Default for Wanted {
             desktop: true,
             cli: false,
             stats: false,
+            rust: false,
             wizard: false,
         }
     }
@@ -114,7 +116,7 @@ impl Default for Wanted {
 
 impl Wanted {
     fn products(&self) -> Option<Products> {
-        Products::from_choice(self.desktop, self.cli, self.stats)
+        Products::from_choice(self.desktop, self.cli, self.stats, self.rust)
     }
 }
 
@@ -133,6 +135,8 @@ struct Choosing {
     cli_size: Option<u64>,
     /// Noctorium Stats' download, or nothing when this release has none for this machine.
     stats_size: Option<u64>,
+    /// Noctorium Rust's download, or nothing when this release has none for this machine.
+    rust_size: Option<u64>,
     plan: Result<Plan, String>,
 }
 
@@ -142,6 +146,7 @@ impl Choosing {
         let chosen = offers.iter().position(|o| o.recommended).unwrap_or(0);
         let cli_size = flow::cli_asset(&found).map(|a| a.size);
         let stats_size = flow::stats_asset(&found).map(|a| a.size);
+        let rust_size = flow::rust_asset(&found).map(|a| a.size);
         let mut choosing = Choosing {
             found,
             offers,
@@ -149,10 +154,12 @@ impl Choosing {
             wanted: Wanted {
                 cli: wanted.cli && cli_size.is_some(),
                 stats: wanted.stats && stats_size.is_some(),
+                rust: wanted.rust && rust_size.is_some(),
                 ..wanted
             },
             cli_size,
             stats_size,
+            rust_size,
             plan: Err(String::new()),
         };
         choosing.replan();
@@ -420,6 +427,7 @@ impl Gui {
                 self.wanted.desktop = failed(Product::Desktop);
                 self.wanted.cli = failed(Product::Cli);
                 self.wanted.stats = failed(Product::Stats);
+                self.wanted.rust = failed(Product::Rust);
             }
             self.look(ctx);
         }
@@ -477,10 +485,10 @@ fn ready(
         Ok(plan) if plan.items.len() > 1 => format!(
             "{:.0} MB to download, {} at once",
             plan.megabytes_to_download(),
-            if plan.items.len() == 2 {
-                "both"
-            } else {
-                "all three"
+            match plan.items.len() {
+                2 => "both",
+                3 => "all three",
+                _ => "all four",
             }
         ),
         Ok(plan) => format!("{:.0} MB to download", plan.megabytes_to_download()),
@@ -489,9 +497,15 @@ fn ready(
             let desktop = choosing.desktop_size().filter(|_| wanted.desktop);
             let cli = choosing.cli_size.filter(|_| wanted.cli);
             let stats = choosing.stats_size.filter(|_| wanted.stats);
+            let rust = choosing.rust_size.filter(|_| wanted.rust);
             format!(
                 "{} to download",
-                megabytes(desktop.unwrap_or(0) + cli.unwrap_or(0) + stats.unwrap_or(0))
+                megabytes(
+                    desktop.unwrap_or(0)
+                        + cli.unwrap_or(0)
+                        + stats.unwrap_or(0)
+                        + rust.unwrap_or(0)
+                )
             )
         }
     };
@@ -499,7 +513,7 @@ fn ready(
     ui.add_space(12.0);
 
     // A box for each, rather than a list of every combination: they are separate programs, and which of
-    // them is wanted is three questions of yes or no. Each says what it is and how big, in the label
+    // them is wanted is four questions of yes or no. Each says what it is and how big, in the label
     // itself, so a screen reader says it all with the box.
     // What a product this release does not carry says instead of its size, in the label itself rather
     // than only when the pointer is over it: a box that cannot be ticked and does not say why looks
@@ -544,6 +558,18 @@ fn ready(
             ui.add_enabled(
                 choosing.stats_size.is_some(),
                 egui::Checkbox::new(&mut wanted.stats, stats),
+            )
+            .on_disabled_hover_text(missing.as_str());
+            ui.add_space(4.0);
+            let rust = product_label(
+                ui,
+                "Noctorium Rust",
+                &or_missing("the player, written in Rust", choosing.rust_size),
+                choosing.rust_size,
+            );
+            ui.add_enabled(
+                choosing.rust_size.is_some(),
+                egui::Checkbox::new(&mut wanted.rust, rust),
             )
             .on_disabled_hover_text(missing.as_str());
         },

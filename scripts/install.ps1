@@ -10,8 +10,9 @@
 # checks it against the SHA256SUMS.txt published beside it, and runs it with those options. The installer
 # then says what it found and asks before it changes anything; --help lists what else it takes.
 #
-# It offers Noctorium, the Noctorium CLI and Noctorium Stats, which shows what you have listened to:
-# --product desktop, cli, stats, both (Noctorium and the CLI) or all, or several joined by commas, such as
+# It offers Noctorium, the Noctorium CLI, Noctorium Stats, which shows what you have listened to, and
+# Noctorium Rust, the player written in Rust: --product desktop, cli, stats, rust, both (Noctorium and the
+# CLI) or all, or several joined by commas, such as
 # desktop,stats. NOCTORIUM_PRODUCT says the same, and is how iex is given it:
 #
 #   $env:NOCTORIUM_PRODUCT = 'stats'; irm https://noctorium.vercel.app/install | iex
@@ -90,14 +91,15 @@
         }
         if (-not $asked) { return $null }
 
-        $desktop = $false; $cli = $false; $stats = $false
+        $desktop = $false; $cli = $false; $stats = $false; $rust = $false
         foreach ($one in @($asked.ToLowerInvariant() -split '[,+\s]+' | Where-Object { $_ })) {
             switch -CaseSensitive ($one) {
                 'desktop' { $desktop = $true }
                 'cli' { $cli = $true }
                 'stats' { $stats = $true }
+                'rust' { $rust = $true }
                 'both' { $desktop = $true; $cli = $true }
-                'all' { $desktop = $true; $cli = $true; $stats = $true }
+                'all' { $desktop = $true; $cli = $true; $stats = $true; $rust = $true }
                 default { return $null }
             }
         }
@@ -106,13 +108,19 @@
             $stats = $false
             $leftOut = $true
         }
-        # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats is only
-        # still here when the release, and so its installer, has it. Without Stats, the words every
-        # installer has always taken.
-        $product = if ($stats) {
-            (@(if ($desktop) { 'desktop' }) + @(if ($cli) { 'cli' }) + 'stats') -join ','
+        # Noctorium Rust came later still, and is left out the same way from a release without it.
+        $rustLeftOut = $false
+        if ($rust -and $listing -notmatch '(?m)^\s*[0-9A-Fa-f]{64}\s+\*?noctorium-rust-\d[^/\r\n]*-windows-x64\.zip\s*$') {
+            $rust = $false
+            $rustLeftOut = $true
+        }
+        # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats, or
+        # Noctorium Rust, is only still here when the release, and so its installer, has it. Without either,
+        # the words every installer has always taken.
+        $product = if ($stats -or $rust) {
+            (@(if ($desktop) { 'desktop' }) + @(if ($cli) { 'cli' }) + @(if ($stats) { 'stats' }) + @(if ($rust) { 'rust' })) -join ','
         } elseif ($desktop -and $cli) { 'both' } elseif ($desktop) { 'desktop' } elseif ($cli) { 'cli' } else { '' }
-        [pscustomobject]@{ Product = $product; LeftOut = $leftOut; Nothing = -not $product }
+        [pscustomobject]@{ Product = $product; LeftOut = $leftOut; RustLeftOut = $rustLeftOut; Nothing = -not $product }
     }
 
     # PowerShell 7 runs on Linux and macOS too, where the Windows installer is of no use. Both have their
@@ -173,6 +181,9 @@
         if ($null -ne $choice) {
             if ($choice.LeftOut) {
                 Say 'Noctorium Stats is not in the latest release yet, so it is left out, and nothing is downloaded for it.' DarkGray
+            }
+            if ($choice.RustLeftOut) {
+                Say 'Noctorium Rust is not in the latest release yet, so it is left out, and nothing is downloaded for it.' DarkGray
             }
             if ($choice.Nothing) {
                 Say 'Nothing else was asked for, so nothing has been installed.' DarkGray

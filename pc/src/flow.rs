@@ -26,6 +26,9 @@ pub enum Product {
     /// Noctorium Stats, which signs in to the listener's Noctorium account and shows what they have
     /// listened to: a program of its own, beside the player rather than part of it.
     Stats,
+    /// Noctorium Rust: Noctorium for the desktop, written in Rust -- the same player as one native program,
+    /// installed as Noctorium Stats is.
+    Rust,
 }
 
 impl Product {
@@ -34,19 +37,26 @@ impl Product {
             Product::Desktop => "Noctorium",
             Product::Cli => "Noctorium CLI",
             Product::Stats => "Noctorium Stats",
+            Product::Rust => "Noctorium Rust",
         }
     }
 
     /// All of them, in the order they are offered, planned and listed.
-    pub const ALL: [Product; 3] = [Product::Desktop, Product::Cli, Product::Stats];
+    pub const ALL: [Product; 4] = [
+        Product::Desktop,
+        Product::Cli,
+        Product::Stats,
+        Product::Rust,
+    ];
 }
 
-/// Which of them were asked for: any of the three, in any combination but none.
+/// Which of them were asked for: any of the four, in any combination but none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Products {
     pub desktop: bool,
     pub cli: bool,
     pub stats: bool,
+    pub rust: bool,
 }
 
 impl Default for Products {
@@ -60,16 +70,19 @@ impl Products {
         desktop: true,
         cli: false,
         stats: false,
+        rust: false,
     };
     pub const CLI: Products = Products {
         desktop: false,
         cli: true,
         stats: false,
+        rust: false,
     };
     pub const STATS: Products = Products {
         desktop: false,
         cli: false,
         stats: true,
+        rust: false,
     };
     /// Noctorium and the Noctorium CLI, which is what `both` meant before there were three, and still
     /// means: a script written then installs now what it installed then.
@@ -77,11 +90,19 @@ impl Products {
         desktop: true,
         cli: true,
         stats: false,
+        rust: false,
+    };
+    pub const RUST: Products = Products {
+        desktop: false,
+        cli: false,
+        stats: false,
+        rust: true,
     };
     pub const ALL: Products = Products {
         desktop: true,
         cli: true,
         stats: true,
+        rust: true,
     };
 
     pub fn each(self) -> Vec<Product> {
@@ -91,8 +112,8 @@ impl Products {
             .collect()
     }
 
-    /// What `--product` takes: `desktop`, `cli`, `stats`, `both` (Noctorium and the CLI) or `all`, or
-    /// several of them joined by commas or plus signs -- `desktop,stats`. Nothing for a word it does not
+    /// What `--product` takes: `desktop`, `cli`, `stats`, `rust`, `both` (Noctorium and the CLI) or `all`,
+    /// or several of them joined by commas or plus signs -- `desktop,stats`. Nothing for a word it does not
     /// know, or for nothing at all.
     pub fn parse(words: &str) -> Option<Products> {
         let mut products = Products::none();
@@ -101,6 +122,7 @@ impl Products {
                 "desktop" => Products::DESKTOP,
                 "cli" => Products::CLI,
                 "stats" => Products::STATS,
+                "rust" => Products::RUST,
                 "both" => Products::BOTH,
                 "all" => Products::ALL,
                 _ => return None,
@@ -111,11 +133,12 @@ impl Products {
     }
 
     /// From a yes or no for each, which is how the window asks; nothing when all are no.
-    pub fn from_choice(desktop: bool, cli: bool, stats: bool) -> Option<Products> {
+    pub fn from_choice(desktop: bool, cli: bool, stats: bool, rust: bool) -> Option<Products> {
         let products = Products {
             desktop,
             cli,
             stats,
+            rust,
         };
         (!products.is_empty()).then_some(products)
     }
@@ -125,6 +148,7 @@ impl Products {
             Product::Desktop => self.desktop,
             Product::Cli => self.cli,
             Product::Stats => self.stats,
+            Product::Rust => self.rust,
         }
     }
 
@@ -134,11 +158,12 @@ impl Products {
             desktop: self.desktop || other.desktop,
             cli: self.cli || other.cli,
             stats: self.stats || other.stats,
+            rust: self.rust || other.rust,
         }
     }
 
     pub fn is_empty(self) -> bool {
-        !self.desktop && !self.cli && !self.stats
+        !self.desktop && !self.cli && !self.stats && !self.rust
     }
 
     pub fn count(self) -> usize {
@@ -150,6 +175,7 @@ impl Products {
             desktop: false,
             cli: false,
             stats: false,
+            rust: false,
         }
     }
 }
@@ -197,7 +223,10 @@ impl Format {
             | Method::CliMac
             | Method::StatsWindows
             | Method::StatsLinux
-            | Method::StatsMac => Format::Auto,
+            | Method::StatsMac
+            | Method::RustWindows
+            | Method::RustLinux
+            | Method::RustMac => Format::Auto,
         }
     }
 }
@@ -374,10 +403,20 @@ pub fn cli_asset(found: &Found) -> Option<&Asset> {
 
 /// Noctorium Stats' file in this release for this machine, if it carries one.
 pub fn stats_asset(found: &Found) -> Option<&Asset> {
+    standalone_asset(&install::STATS, found)
+}
+
+/// Noctorium Rust's file in this release for this machine, if it carries one.
+pub fn rust_asset(found: &Found) -> Option<&Asset> {
+    standalone_asset(&install::RUST, found)
+}
+
+fn standalone_asset<'a>(program: &install::Standalone, found: &'a Found) -> Option<&'a Asset> {
     let arch = found.system.arch?;
-    found
-        .release
-        .asset_for(Method::stats_for(found.system.os).wanted(), arch)
+    found.release.asset_for(
+        Method::standalone_for(program, found.system.os).wanted(),
+        arch,
+    )
 }
 
 /// What is about to happen, settled before anything is downloaded.
@@ -516,6 +555,14 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
                     continue;
                 }
             },
+            // As Stats: every release before 0.21.0 has none, and what else was asked for goes ahead.
+            Product::Rust => match standalone_method(&install::RUST, found, arch) {
+                Some(chosen) => chosen,
+                None => {
+                    notes.push(left_out(&install::RUST, found, "0.21.0"));
+                    continue;
+                }
+            },
         };
         let published = github::published_checksum(listing, &asset.name).ok_or_else(|| {
             Problem::Missing(format!(
@@ -543,7 +590,11 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         if !method.needs_root()
             && !matches!(
                 method,
-                Method::WindowsMsi | Method::WindowsSetup | Method::MacDiskImage | Method::StatsMac
+                Method::WindowsMsi
+                    | Method::WindowsSetup
+                    | Method::MacDiskImage
+                    | Method::StatsMac
+                    | Method::RustMac
             )
         {
             if let Some(user) = &system.sudo_user {
@@ -573,7 +624,10 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
             ));
         }
 
-        if matches!(method, Method::MacDiskImage | Method::StatsMac) {
+        if matches!(
+            method,
+            Method::MacDiskImage | Method::StatsMac | Method::RustMac
+        ) {
             if let Some(folder) = &found.places.applications {
                 if folder != Path::new("/Applications") {
                     notes.push(format!(
@@ -634,12 +688,12 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         }
         // Said only when it is all there is to say: with the Noctorium CLI beside it, the note above has
         // said it already, and Noctorium Stats is in the applications menu whatever PATH says.
-        if method == Method::StatsLinux && !user_bin_on_path && !options.products.cli {
-            notes.push(
-                "~/.local/bin is not on your PATH, so `noctorium-stats` will not be found by name in a \
+        if method.is_standalone_linux() && !user_bin_on_path && !options.products.cli {
+            let command = method.standalone().expect("a program of its own").command;
+            notes.push(format!(
+                "~/.local/bin is not on your PATH, so `{command}` will not be found by name in a \
                  terminal until it is. The applications menu has it either way."
-                    .into(),
-            );
+            ));
         }
         // Most Linux distributions put ~/.local/bin on PATH once it exists, and the end of the install says
         // what to do on one that does not. macOS never does, so on a Mac it is done here, and shown in
@@ -648,8 +702,13 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
         if method == Method::CliMac && !user_bin_on_path && !found.places.leave_path {
             actions.push(install::add_user_bin_to_path(&found.places)?);
         }
-        if method == Method::StatsWindows {
-            actions.extend(install::list_installed(&found.places, found.version())?);
+        if method.is_standalone_windows() {
+            let program = method.standalone().expect("a program of its own");
+            actions.extend(install::list_installed_as(
+                program,
+                &found.places,
+                found.version(),
+            )?);
         }
         let start = install::how_to_start(method, &found.places, user_bin_on_path);
         items.push(Item {
@@ -853,7 +912,16 @@ fn cli_method(found: &Found, arch: Arch) -> Result<(Method, Asset), Problem> {
 
 /// The method and file for Noctorium Stats, or nothing when this release carries none for this machine.
 fn stats_method(found: &Found, arch: Arch) -> Option<(Method, Asset)> {
-    let method = Method::stats_for(found.system.os);
+    standalone_method(&install::STATS, found, arch)
+}
+
+/// The method and file for [program], or nothing when this release carries none for this machine.
+fn standalone_method(
+    program: &install::Standalone,
+    found: &Found,
+    arch: Arch,
+) -> Option<(Method, Asset)> {
+    let method = Method::standalone_for(program, found.system.os);
     found
         .release
         .asset_for(method.wanted(), arch)
@@ -874,6 +942,24 @@ pub fn stats_left_out(found: &Found) -> String {
         "Noctorium Stats is not in {} yet, so it is left out and nothing is downloaded for it. It is \
          new, and comes for {system_name} as {pattern} from the release that first carries it.",
         found.release.tag
+    )
+}
+
+/// What is said when [program] was asked for and this release has none for this machine: it first came
+/// out in [since].
+pub fn left_out(program: &install::Standalone, found: &Found, since: &str) -> String {
+    let system_name = match found.system.os {
+        Os::Windows => "Windows",
+        Os::MacOs => "macOS",
+        _ => "Linux",
+    };
+    let pattern = Method::standalone_for(program, found.system.os)
+        .wanted()
+        .pattern(found.system.arch.unwrap_or(Arch::X86_64));
+    format!(
+        "{} is not in {}, so it is left out and nothing is downloaded for it. It comes for \
+         {system_name} as {pattern} from {since} on.",
+        program.name, found.release.tag
     )
 }
 
@@ -1752,31 +1838,39 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
     }
 
     #[test]
-    fn the_windows_choice_is_any_of_the_three_but_none() {
+    fn the_windows_choice_is_any_of_the_four_but_none() {
         assert_eq!(
-            Products::from_choice(true, false, false),
+            Products::from_choice(true, false, false, false),
             Some(Products::DESKTOP)
         );
         assert_eq!(
-            Products::from_choice(false, true, false),
+            Products::from_choice(false, true, false, false),
             Some(Products::CLI)
         );
         assert_eq!(
-            Products::from_choice(true, true, false),
+            Products::from_choice(true, true, false, false),
             Some(Products::BOTH)
         );
         assert_eq!(
-            Products::from_choice(false, false, true),
+            Products::from_choice(false, false, true, false),
             Some(Products::STATS)
         );
-        assert_eq!(Products::from_choice(true, true, true), Some(Products::ALL));
-        assert_eq!(Products::from_choice(false, false, false), None);
+        assert_eq!(
+            Products::from_choice(true, true, true, true),
+            Some(Products::ALL)
+        );
+        assert_eq!(Products::from_choice(false, false, false, false), None);
         assert!(Products::BOTH.includes(Product::Cli));
         assert!(!Products::BOTH.includes(Product::Stats));
         assert!(!Products::DESKTOP.includes(Product::Cli));
         assert_eq!(
             Products::ALL.each(),
-            vec![Product::Desktop, Product::Cli, Product::Stats],
+            vec![
+                Product::Desktop,
+                Product::Cli,
+                Product::Stats,
+                Product::Rust
+            ],
             "always in the same order, whatever order they were asked for in"
         );
         assert_eq!(Products::default(), Products::DESKTOP);
@@ -1793,7 +1887,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
             Some(Products {
                 desktop: true,
                 cli: false,
-                stats: true
+                stats: true,
+                rust: false,
             })
         );
         assert_eq!(
@@ -1801,10 +1896,25 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
             Some(Products {
                 desktop: false,
                 cli: true,
-                stats: true
+                stats: true,
+                rust: false,
             })
         );
-        assert_eq!(Products::parse("both,stats"), Some(Products::ALL));
+        assert_eq!(Products::parse("both,stats,rust"), Some(Products::ALL));
+        assert_eq!(Products::parse("rust"), Some(Products::RUST));
+        assert_eq!(
+            Products::parse("Rust+desktop"),
+            Some(Products {
+                desktop: true,
+                cli: false,
+                stats: false,
+                rust: true,
+            })
+        );
+        assert_eq!(
+            Products::from_choice(false, false, false, true),
+            Some(Products::RUST)
+        );
         assert_eq!(
             Products::parse("stats, desktop"),
             Products::parse("desktop,stats")
@@ -1861,6 +1971,144 @@ eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  Noctorium-Stat
         }
     }
 
+    // ------------------------------------------------------------ Noctorium Rust
+
+    const RUST_SUMS: &str = "\
+1111111111111111111111111111111111111111111111111111111111111111  noctorium-rust-0.7.0-windows-x64.zip
+2222222222222222222222222222222222222222222222222222222222222222  noctorium-rust-0.7.0-linux-x64.tar.gz
+3333333333333333333333333333333333333333333333333333333333333333  noctorium-rust-0.7.0-macos-arm64.zip
+4444444444444444444444444444444444444444444444444444444444444444  noctorium-rust-0.7.0-macos-x64.zip
+";
+
+    /// A release with Noctorium Rust beside Stats and the rest, as 0.21.0 is.
+    fn with_rust(found: Found) -> Found {
+        let mut names: Vec<&str> = WITH_STATS.to_vec();
+        names.extend([
+            "noctorium-rust-0.7.0-windows-x64.zip",
+            "noctorium-rust-0.7.0-linux-x64.tar.gz",
+            "noctorium-rust-0.7.0-macos-arm64.zip",
+            "noctorium-rust-0.7.0-macos-x64.zip",
+        ]);
+        Found {
+            release: release(&names),
+            checksums: Some(format!("{SUMS}{STATS_SUMS}{RUST_SUMS}")),
+            ..found
+        }
+    }
+
+    fn plan_all(found: &Found) -> Vec<Method> {
+        plan(found, only(Products::ALL))
+            .expect("should plan")
+            .items
+            .iter()
+            .map(|item| item.method)
+            .collect()
+    }
+
+    #[test]
+    fn windows_unpacks_noctorium_rust_into_its_own_folder_with_a_shortcut_and_an_uninstaller() {
+        let mut found = with_rust(found(windows(), ON_WINDOWS));
+        found.places.start_menu =
+            Some(r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs".into());
+        let plan = plan(&found, only(Products::RUST)).expect("should plan");
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.product, Product::Rust);
+        assert_eq!(item.method, Method::RustWindows);
+        assert_eq!(item.asset.name, "noctorium-rust-0.7.0-windows-x64.zip");
+        assert_eq!(item.published, "1".repeat(64));
+        let folder = PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs").join("Noctorium Rust");
+        let shortcut =
+            PathBuf::from(r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs")
+                .join("Noctorium Rust.lnk");
+        assert_eq!(
+            item.actions,
+            vec![
+                Action::UnpackStats {
+                    program: &install::RUST,
+                    archive: download_folder().join("noctorium-rust-0.7.0-windows-x64.zip"),
+                    into: folder.clone(),
+                    link: None,
+                },
+                Action::StartMenuShortcut {
+                    program: &install::RUST,
+                    folder: folder.clone(),
+                    shortcut: shortcut.clone(),
+                },
+                Action::ListInstalled {
+                    program: &install::RUST,
+                    folder,
+                    shortcut,
+                    version: "0.7.0".into(),
+                },
+            ]
+        );
+        assert!(item.start.contains("Noctorium Rust"), "{}", item.start);
+        assert_eq!(
+            plan_all(&found),
+            vec![
+                Method::WindowsMsi,
+                Method::CliWindows,
+                Method::StatsWindows,
+                Method::RustWindows
+            ]
+        );
+    }
+
+    #[test]
+    fn linux_and_each_mac_get_noctorium_rust_as_they_get_stats() {
+        let found = with_rust(found(
+            linux(Some(Family::Debian), Some(PackageManager::Apt)),
+            ALL,
+        ));
+        let plan = plan(&found, only(Products::RUST)).expect("should plan");
+        let item = &plan.items[0];
+        assert_eq!(item.method, Method::RustLinux);
+        assert_eq!(item.asset.name, "noctorium-rust-0.7.0-linux-x64.tar.gz");
+        assert!(matches!(
+            &item.actions[0],
+            Action::UnpackStats { program, link: Some(link), .. }
+                if *program == &install::RUST && link.ends_with("noctorium-rust")
+        ));
+        assert!(
+            matches!(&item.actions[1], Action::MenuEntry { program, .. } if *program == &install::RUST)
+        );
+        assert!(!plan.needs_password(), "for this user alone");
+        for (arch, file) in [
+            (Arch::Aarch64, "noctorium-rust-0.7.0-macos-arm64.zip"),
+            (Arch::X86_64, "noctorium-rust-0.7.0-macos-x64.zip"),
+        ] {
+            let found = with_rust(found_on_a_mac(arch, WITH_MACS));
+            let on_a_mac = super::plan(&found, only(Products::RUST)).expect("should plan");
+            let item = &on_a_mac.items[0];
+            assert_eq!(item.method, Method::RustMac);
+            assert_eq!(item.asset.name, file);
+            assert!(matches!(
+                &item.actions[0],
+                Action::PlaceZippedApp { app, .. } if app == "Noctorium Rust.app"
+            ));
+        }
+    }
+
+    #[test]
+    fn a_release_from_before_noctorium_rust_leaves_it_out_and_installs_the_rest() {
+        let mut found = with_stats(found(windows(), ON_WINDOWS));
+        found.places.start_menu =
+            Some(r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs".into());
+        assert_eq!(rust_asset(&found), None);
+        let plan = plan(&found, only(Products::ALL)).expect("should plan the rest");
+        assert!(!plan.items.iter().any(|i| i.product == Product::Rust));
+        assert!(plan.items.iter().any(|i| i.product == Product::Stats));
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("Noctorium Rust is not in v0.7.0")
+                    && n.contains("noctorium-rust-<version>-")),
+            "{:?}",
+            plan.notes
+        );
+    }
+
     #[test]
     fn windows_unpacks_stats_beside_the_cli_and_gives_it_a_shortcut_and_an_uninstaller() {
         let mut found = with_stats(found(windows(), ON_WINDOWS));
@@ -1882,15 +2130,18 @@ eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  Noctorium-Stat
             item.actions,
             vec![
                 Action::UnpackStats {
+                    program: &install::STATS,
                     archive: download_folder().join("noctorium-stats-0.7.0-windows-x64.zip"),
                     into: folder.clone(),
                     link: None,
                 },
                 Action::StartMenuShortcut {
+                    program: &install::STATS,
                     folder: folder.clone(),
                     shortcut: shortcut.clone(),
                 },
                 Action::ListInstalled {
+                    program: &install::STATS,
                     folder,
                     shortcut,
                     version: "0.7.0".into(),
@@ -1945,11 +2196,13 @@ eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  Noctorium-Stat
             item.actions,
             vec![
                 Action::UnpackStats {
+                    program: &install::STATS,
                     archive: download_folder().join("noctorium-stats-0.7.0-linux-x64.tar.gz"),
                     into: PathBuf::from("/home/sam/.local/share/noctorium-stats"),
                     link: Some(PathBuf::from("/home/sam/.local/bin/noctorium-stats")),
                 },
                 Action::MenuEntry {
+                    program: &install::STATS,
                     folder: PathBuf::from("/home/sam/.local/share/noctorium-stats"),
                     entry: PathBuf::from(
                         "/home/sam/.local/share/applications/noctorium-stats.desktop"

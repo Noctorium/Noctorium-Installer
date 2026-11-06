@@ -8,6 +8,11 @@ the desktop is [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Deskto
 [Noctorium-cli](https://github.com/Noctorium/Noctorium-cli), and what they share is
 [Noctorium-Base](https://github.com/Noctorium/Noctorium-Base).
 
+From 0.21.0 every release also carries **Noctorium Rust**: Noctorium for the desktop written in Rust, from
+[Noctorium-Desktop-Rust](https://github.com/Noctorium/Noctorium-Desktop-Rust) — the same player as one
+native program, for Windows, Linux and both kinds of Mac, offered by every PC installer beside the rest and
+installed the way Noctorium Stats is.
+
 Every release also carries **Noctorium Stats**, which signs in to your Noctorium account and shows what you
 have listened to: songs, artists, hours, the services, the time of day. It is a program of its own, beside
 the player rather than part of it — for the computer from
@@ -128,7 +133,7 @@ needs it to see a release; it only raises the rate limit an address shares with 
 The window ones show what they found, wait to be told to go ahead, and draw a progress bar; it is the
 first thing anybody sees of Noctorium, usually before they have any reason to trust it, and a console full
 of scrolling text is not what somebody who has just downloaded a music player expects. They offer
-Noctorium, the Noctorium CLI and Noctorium Stats — a box for each, Noctorium ticked to begin with, each
+Noctorium, the Noctorium CLI, Noctorium Stats and Noctorium Rust — a box for each, Noctorium ticked to begin with, each
 saying how much it is to download, or that this release does not have it yet — and then a bar for each,
 and at the end how to start each one. On Linux the window has one more row, for the format, which starts
 on whatever this machine would pick.
@@ -155,23 +160,24 @@ default, and `--yes` takes them all, so the same program serves somebody at a pr
 installing Noctorium on a row of machines.
 
 ```
-  ♫ Noctorium  installer 1.4.0
+  ♫ Noctorium  installer 0.21.0
 
   System    Ubuntu 24.04.1 LTS · x86-64 · apt, flatpak
-  Release   v0.13.0 (the latest)
+  Release   v0.21.0 (the latest)
 
   What would you like to install?
     1  Noctorium        the music player, in a window, 242.7 MB  recommended
     2  Noctorium CLI    the same player, in a terminal, 63.4 MB
     3  Both             Noctorium and the CLI, 306.1 MB, at once
     4  Noctorium Stats  your listening, in figures, in a window, 7.3 MB
-  Choose 1-4, or several, such as 1 4 [1]
+    5  Noctorium Rust   the player, written in Rust, in a window, 9.1 MB
+  Choose 1-5, or several, such as 1 4 [1]
 ```
 
 | Option | |
 | --- | --- |
 | `-y`, `--yes` | Ask nothing: take the defaults and install. |
-| `--product desktop\|cli\|stats\|both\|all` | Noctorium (the default), the Noctorium CLI, Noctorium Stats, Noctorium and the CLI, or all three — or several joined by commas, such as `desktop,stats`. `NOCTORIUM_PRODUCT` says the same when there is no `--product`. |
+| `--product desktop\|cli\|stats\|rust\|both\|all` | Noctorium (the default), the Noctorium CLI, Noctorium Stats, Noctorium Rust, Noctorium and the CLI, or all four — or several joined by commas, such as `desktop,stats`. `NOCTORIUM_PRODUCT` says the same when there is no `--product`. |
 | `--format auto\|deb\|rpm\|arch\|appimage\|flatpak` | Linux only. `auto` is the distribution's own package where there is one, and the AppImage everywhere else. |
 | `--wizard` | Windows only. Open the `.msi`'s own pages, to choose the folder, rather than installing with a progress bar and nothing to click. |
 | `--version X.Y.Z` | Install release `vX.Y.Z` rather than the latest. |
@@ -192,7 +198,8 @@ noctorium-installer-cli                                  # ask, then install
 noctorium-installer-cli --yes                            # Noctorium, the way this machine prefers
 noctorium-installer-cli --product both --yes             # and the Noctorium CLI beside it
 noctorium-installer-cli --product desktop,stats --yes    # Noctorium, and Noctorium Stats beside it
-noctorium-installer-cli --product all --yes              # all three
+noctorium-installer-cli --product rust --yes             # Noctorium Rust, the player written in Rust
+noctorium-installer-cli --product all --yes              # all four
 noctorium-installer-cli --format appimage                # the AppImage, whatever the distribution
 noctorium-installer-cli --wizard                         # Windows: choose the folder in the setup's pages
 noctorium-installer-cli --product both --download-only -y    # fetch both now, install them later
@@ -239,6 +246,14 @@ Its settings and its sign-in — in the system's own credential store — are it
 update or an uninstall. Asked of a release from before Stats, the installer leaves it out, says so, and
 installs whatever else was asked for: `--product all` against 0.12.2 is Noctorium and the CLI and a line
 about Stats, and `--product stats` alone installs nothing and exits 0.
+
+**Noctorium Rust** is installed exactly as Noctorium Stats is, from `noctorium-rust-<version>-windows-x64.zip`
+(`Noctorium Rust.exe`), `-linux-x64.tar.gz` (`noctorium-rust`, its `.desktop` file and its icon) and
+`-macos-arm64.zip` or `-macos-x64.zip` (`Noctorium Rust.app`): into `%LOCALAPPDATA%\Programs\Noctorium Rust`
+with a Start menu shortcut and an entry in Installed apps under `...\Uninstall\NoctoriumRust`, into
+`~/.local/share/noctorium-rust` with a menu entry and `noctorium-rust` in `~/.local/bin`, or into
+Applications. Its own update button runs the terminal installer for it once its window has closed. Asked of
+a release from before 0.21.0, the installer leaves it out and says so, as it does Stats.
 
 To try the install somewhere it can do no harm, point `LOCALAPPDATA` and `APPDATA` (Windows) or `HOME` at
 a folder of your own and set `NOCTORIUM_NO_PATH=1`: the CLI and Noctorium Stats are unpacked in there,
@@ -298,8 +313,9 @@ sudo apt-get install musl-tools && rustup target add x86_64-unknown-linux-musl
 | Android | `Noctorium-<version>.apk` |
 | The Noctorium CLI | `noctorium-cli-<version>-windows-x64.zip`, `noctorium-cli-<version>-linux-x64.tar.gz`, `noctorium-cli-<version>-macos-arm64.tar.gz`, `noctorium-cli-<version>-macos-x64.tar.gz`, in the releases that carry it |
 | Noctorium Stats | `noctorium-stats-<version>-windows-x64.zip` (`Noctorium Stats.exe`), `noctorium-stats-<version>-linux-x64.tar.gz` (`noctorium-stats`, its `.desktop` file and its icon), `noctorium-stats-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Stats.app`), and `Noctorium-Stats-<version>.apk`, from 0.13.0 on |
+| Noctorium Rust | `noctorium-rust-<version>-windows-x64.zip` (`Noctorium Rust.exe`), `noctorium-rust-<version>-linux-x64.tar.gz` (`noctorium-rust`, its `.desktop` file and its icon), `noctorium-rust-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Rust.app`), from 0.21.0 on |
 
-A release is twenty-seven files: these twenty-six and `SHA256SUMS.txt`. The release job counts them, and
+A release is thirty-one files: these thirty and `SHA256SUMS.txt`. The release job counts them, and
 refuses to make a draft that is short of one.
 
 On a Mac, take the disk image for its processor — Apple menu, About This Mac, says Chip for Apple silicon
@@ -379,7 +395,9 @@ Noctorium-Base commit it pins, runs the tests, packages each platform on its own
 `.github/workflows/stats.yml`: the desktop program on Windows, Linux and both kinds of Mac, each archive
 opened again and checked to be named and shaped as the installers expect, and the APK signed with the same
 key as Noctorium's. The steps that build it are the stats repositories' READMEs', marked as such, so a
-change to how either is built is one step to change. It is a draft
+change to how either is built is one step to change. Noctorium Rust is built by
+`.github/workflows/rust.yml` the same way, from Noctorium-Desktop-Rust's `packaging/package.sh`, so
+Noctorium-Desktop-Rust has to carry the tag too. It is a draft
 on purpose — read it, check the files are the sizes you expect, write the notes, and publish it yourself.
 
 Tagging only this repository fails in the first minute, and the message does not say why: the checkout of
@@ -445,6 +463,7 @@ installed; a release without one is refused with a link to the page instead.
 | Android | Downloads the APK and hands it to Android's package installer, which asks again |
 | Unzipped folder, or Gradle | Told there is an update, and sent to the release page |
 | Noctorium Stats | Run the installer again, which replaces it whole; on a phone, the phone installer's Stats button |
+| Noctorium Rust | Settings, About and updates, Install it: the terminal installer runs for it once the window has closed |
 
 ## The three shapes of the version
 

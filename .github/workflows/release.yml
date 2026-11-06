@@ -2,7 +2,8 @@ name: Release
 
 # Builds the things people install -- a Windows installer, an Android APK, for Linux a .deb, an .rpm,
 # an Arch package, an AppImage and a Flatpak, and for the Mac a disk image for Apple silicon and one for
-# Intel, and beside them the Noctorium CLI and Noctorium Stats -- from the application repositories, and
+# Intel, and beside them the Noctorium CLI, Noctorium Stats and Noctorium Rust -- from the application
+# repositories, and
 # publishes them here. This repository is where releases live and what the in-app updater watches; it holds no
 # application code of its own, only the installers and the packaging in packaging/.
 #
@@ -29,7 +30,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.20.3'
+        default: '0.21.0'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
@@ -50,6 +51,10 @@ on:
         description: 'Noctorium-Stats-Mobile branch, tag or commit to build'
         required: false
         default: 'main'
+      rust_ref:
+        description: 'Noctorium-Desktop-Rust branch, tag or commit to build'
+        required: false
+        default: 'main'
 
 permissions:
   contents: write
@@ -65,6 +70,7 @@ env:
   CLI_REF: ${{ inputs.cli_ref || github.ref_name }}
   STATS_DESKTOP_REF: ${{ inputs.stats_desktop_ref || github.ref_name }}
   STATS_MOBILE_REF: ${{ inputs.stats_mobile_ref || github.ref_name }}
+  RUST_REF: ${{ inputs.rust_ref || github.ref_name }}
 
 jobs:
   # Nothing is packaged until the tests pass. Twenty minutes of packaging on a commit that does not work
@@ -326,12 +332,21 @@ jobs:
     # The Android signing key, which a called workflow is not given unless it is passed on.
     secrets: inherit
 
+  # Noctorium Rust, from Noctorium-Desktop-Rust at the same tag: an archive for Windows, Linux and each kind
+  # of Mac, built and checked as Noctorium Stats' are. See rust.yml.
+  rust:
+    name: Noctorium Rust
+    uses: ./.github/workflows/rust.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+      ref: ${{ inputs.rust_ref || github.ref_name }}
+
   release:
     name: Publish the release
     # linux is linux.yml: the .deb, the .rpm, the Arch package, the AppImage and the Flatpak, every one of
     # which has to succeed. pc-installer is both systems' window and terminal installers, and stats is all
-    # five files of Noctorium Stats.
-    needs: [windows, linux, macos, android, cli, pc-installer, phone-installer, stats]
+    # five files of Noctorium Stats, and rust the four of Noctorium Rust.
+    needs: [windows, linux, macos, android, cli, pc-installer, phone-installer, stats, rust]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -354,13 +369,13 @@ jobs:
             find "$artifact" -type f -exec cp {} release/ \;
           done
           ls -la release
-          # Twenty-six files, and SHA256SUMS.txt makes twenty-seven: Noctorium's two for Windows, five
-          # for Linux, two disk images and an APK; the Noctorium CLI's four; the installers' seven; and
-          # Noctorium Stats' five. Counted, because a job that uploaded nothing under a name nobody
-          # expected would otherwise make a release that is quietly short of something.
+          # Thirty files, and SHA256SUMS.txt makes thirty-one: Noctorium's two for Windows, five for
+          # Linux, two disk images and an APK; the Noctorium CLI's four; the installers' seven; Noctorium
+          # Stats' five; and Noctorium Rust's four. Counted, because a job that uploaded nothing under a
+          # name nobody expected would otherwise make a release that is quietly short of something.
           count=$(find release -type f | wc -l)
-          if [ "$count" -ne 26 ]; then
-            echo "::error::Expected 26 files before the checksums, and there are $count."
+          if [ "$count" -ne 30 ]; then
+            echo "::error::Expected 30 files before the checksums, and there are $count."
             exit 1
           fi
           # And Noctorium Stats' by name, since the installers find them by name.
@@ -368,6 +383,11 @@ jobs:
           for name in "noctorium-stats-$version-windows-x64.zip" "noctorium-stats-$version-linux-x64.tar.gz" \
               "noctorium-stats-$version-macos-arm64.zip" "noctorium-stats-$version-macos-x64.zip" \
               "Noctorium-Stats-$version.apk"; do
+            test -f "release/$name" || { echo "::error::No $name in the release."; exit 1; }
+          done
+          # And Noctorium Rust's, by name, for the same reason.
+          for name in "noctorium-rust-$version-windows-x64.zip" "noctorium-rust-$version-linux-x64.tar.gz" \
+              "noctorium-rust-$version-macos-arm64.zip" "noctorium-rust-$version-macos-x64.zip"; do
             test -f "release/$name" || { echo "::error::No $name in the release."; exit 1; }
           done
           # Generated from inside the folder rather than stripping the path off afterwards. The sed that
@@ -387,7 +407,7 @@ jobs:
           draft: true
           generate_release_notes: false
           body: |
-            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`, Noctorium-cli at `${{ env.CLI_REF }}`, Noctorium-Stats-Desktop at `${{ env.STATS_DESKTOP_REF }}`, Noctorium-Stats-Mobile at `${{ env.STATS_MOBILE_REF }}`.
+            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`, Noctorium-cli at `${{ env.CLI_REF }}`, Noctorium-Stats-Desktop at `${{ env.STATS_DESKTOP_REF }}`, Noctorium-Stats-Mobile at `${{ env.STATS_MOBILE_REF }}`, Noctorium-Desktop-Rust at `${{ env.RUST_REF }}`.
 
             | Platform | File |
             | --- | --- |
@@ -402,6 +422,7 @@ jobs:
             | Android | `Noctorium-*.apk` -- not `Noctorium-Stats-*.apk`, which is Noctorium Stats |
             | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, `noctorium-cli-*-macos-arm64.tar.gz`, `noctorium-cli-*-macos-x64.tar.gz` |
             | Noctorium Stats: your listening, in figures, from your Noctorium account | `noctorium-stats-*-windows-x64.zip`, `noctorium-stats-*-linux-x64.tar.gz`, `noctorium-stats-*-macos-arm64.zip`, `noctorium-stats-*-macos-x64.zip`, and for Android `Noctorium-Stats-*.apk` |
+            | Noctorium Rust: the same player written in Rust, one native program | `noctorium-rust-*-windows-x64.zip`, `noctorium-rust-*-linux-x64.tar.gz`, `noctorium-rust-*-macos-arm64.zip`, `noctorium-rust-*-macos-x64.zip` |
 
             Or take an installer instead, which fetches whichever release is latest at the time and
             checks it before it runs it:
@@ -413,7 +434,7 @@ jobs:
             | macOS | the disk image is the installer | `noctorium-installer-cli-macos`, for Apple silicon and Intel |
             | Android | `Noctorium-Installer-android.apk` | |
 
-            The installers offer Noctorium, the Noctorium CLI and Noctorium Stats, any or all of them. The
+            The installers offer Noctorium, the Noctorium CLI, Noctorium Stats and Noctorium Rust, any or all of them. The
             terminal installer asks which and which format, or takes `--product`, `--yes` and the
             defaults; `--help` says the rest.
 

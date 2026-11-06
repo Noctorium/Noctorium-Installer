@@ -23,6 +23,8 @@ $before = (@('Noctorium-0.12.2-windows-x64.msi', 'noctorium-cli-0.12.2-windows-x
         'noctorium-installer-cli-windows-x64.exe') | ForEach-Object { "$hash  $_" }) -join "`n"
 # With Stats, and the Windows line endings a checksum file may have come with.
 $with = $before + "`r`n$hash  noctorium-stats-0.13.0-windows-x64.zip`r`n$hash  Noctorium-Stats-0.13.0.apk`r`n"
+# 0.21.0: Stats and Noctorium Rust.
+$rust = $with + "$hash  noctorium-rust-0.21.0-windows-x64.zip`n$hash  noctorium-rust-0.21.0-linux-x64.tar.gz`n"
 # Stats for Linux and the phone, and nothing for Windows.
 $notForWindows = $before + "`n$hash  noctorium-stats-0.13.0-linux-x64.tar.gz`n$hash  *Noctorium-Stats-0.13.0.apk`n"
 
@@ -58,6 +60,18 @@ Test-Choice 'cli,stats|False|False' $with @('--product', 'cli+stats')
 Test-Choice 'desktop,cli,stats|False|False' $with @('--product', 'all')
 Test-Choice 'stats|False|False' $with @('--product=stats')
 Test-Choice '|True|True' $notForWindows @('--product', 'stats')
+# Noctorium Rust: alone, beside the rest, and from a release before it, where it is left out.
+Test-Choice 'rust|False|False' $rust @('--product', 'rust')
+Test-Choice 'desktop,cli,stats,rust|False|False' $rust @('--product', 'all')
+Test-Choice 'desktop,rust|False|False' $rust @('--product', 'Rust+desktop')
+Test-Choice '|False|True' $with @('--product', 'rust')
+Test-Choice 'desktop,cli,stats|False|False' $with @('--product', 'all')
+if ((Resolve-Product @('--product', 'rust') $with).RustLeftOut) {
+    Write-Host 'ok     --product rust on 0.13.0 says Noctorium Rust is left out'
+} else {
+    Write-Host 'WRONG  --product rust on 0.13.0 does not say Noctorium Rust is left out'
+    $script:wrong++
+}
 # NOCTORIUM_PRODUCT, which --product wins over.
 $env:NOCTORIUM_PRODUCT = 'stats'
 Test-Choice '|True|True' $before @('--yes')

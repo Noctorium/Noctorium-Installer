@@ -1,0 +1,201 @@
+name: Noctorium Rust
+
+# Noctorium Rust: Noctorium for the desktop, written in Rust -- the same player as one native program --
+# from Noctorium-Desktop-Rust, built for Windows, Linux and both kinds of Mac exactly as Noctorium Stats is
+# (see stats.yml). Four files:
+#
+#   noctorium-rust-<version>-windows-x64.zip       Noctorium Rust.exe
+#   noctorium-rust-<version>-linux-x64.tar.gz      noctorium-rust, noctorium-rust.desktop, noctorium-rust.png
+#   noctorium-rust-<version>-macos-arm64.zip       Noctorium Rust.app
+#   noctorium-rust-<version>-macos-x64.zip         Noctorium Rust.app
+#
+# The installers in pc/ find them by those names, so each job checks its file is named and shaped as they
+# expect before it is handed on. Called by release.yml for a release and by packaging.yml to try it without
+# one.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'The version to call it, with or without the leading v'
+        required: true
+        type: string
+      ref:
+        description: 'Noctorium-Desktop-Rust branch, tag or commit to build'
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Noctorium Rust for ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-latest
+            archive: windows-x64.zip
+          - platform: linux-x64
+            runner: ubuntu-latest
+            archive: linux-x64.tar.gz
+          # Built natively on each kind of Mac, as Noctorium is: macos-15-intel is GitHub's last Intel
+          # image.
+          - platform: macos-arm64
+            runner: macos-15
+            archive: macos-arm64.zip
+          - platform: macos-x64
+            runner: macos-15-intel
+            archive: macos-x64.zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ inputs.version }}
+      PLATFORM: ${{ matrix.platform }}
+      ARCHIVE: ${{ matrix.archive }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Noctorium/Noctorium-Desktop-Rust
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The window is drawn with wgpu or OpenGL through X11 or Wayland, and the keyring and the notes speak
+      # D-Bus; those headers are not on the runner. desktop-file-utils is for checking the menu entry below.
+      - name: Libraries the window is built against
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libdbus-1-dev pkg-config desktop-file-utils
+
+      - name: Tests
+        run: cargo test --locked
+
+      # ---- As Noctorium-Desktop-Rust's packaging/package.sh says, the same as Noctorium Stats': given the
+      # version and the platform it builds the program, with NOCTORIUM_VERSION set from the version and
+      # --locked, runs it with --version where it can, and leaves the one file in dist/.
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          bash packaging/package.sh "${VERSION#v}" "$PLATFORM"
+          ls -la dist
+      # ---- End of what the README decides.
+
+      # The name the installers look for, and inside it what they unpack: the program at the top or in one
+      # folder there, and on Linux its menu entry and icon beside it. Read with Python, which every runner
+      # has, rather than unzip, which a Windows one does not.
+      - name: Named and shaped as the installers expect
+        run: |
+          set -euo pipefail
+          file="dist/noctorium-rust-${VERSION#v}-$ARCHIVE"
+          if [ ! -f "$file" ]; then
+            echo "::error::packaging/package.sh left no $file. It left:"
+            ls -la dist
+            exit 1
+          fi
+          # python on Windows, where python3 may be no more than the Store's stand-in for it.
+          if [ "$RUNNER_OS" = Windows ]; then python=python; else python=python3; fi
+          "$python" - "$file" "$PLATFORM" <<'PY'
+          import sys, tarfile, zipfile
+          path, platform = sys.argv[1], sys.argv[2]
+          if path.endswith(".zip"):
+              names = zipfile.ZipFile(path).namelist()
+          else:
+              names = tarfile.open(path).getnames()
+          names = [n.rstrip("/") for n in names if not n.startswith("__MACOSX")]
+          print("\n".join(names[:40]))
+          # One folder at the top is unpacked as the folder itself, so what matters is what is under it.
+          tops = {n.split("/")[0] for n in names}
+          inner = set(names)
+          if len(tops) == 1:
+              top = next(iter(tops)) + "/"
+              under = {n[len(top):] for n in names if n.startswith(top)}
+              if under:
+                  inner = under
+          wanted = {
+              "windows-x64": ["Noctorium Rust.exe"],
+              "linux-x64": ["noctorium-rust", "noctorium-rust.desktop", "noctorium-rust.png"],
+          }.get(platform, ["Noctorium Rust.app/Contents/Info.plist"])
+          missing = [w for w in wanted if w not in inner and w not in names]
+          if missing:
+              sys.exit(f"{path} has no {', '.join(missing)} where the installers look for it")
+          print(f"{path}: has {', '.join(wanted)}")
+          PY
+
+      # Windows: a window program, not a console one -- started from the Start menu, a console program
+      # brings a black window up beside its own. Its icon and version are said, for the record.
+      - name: A window program
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $zip = "dist/noctorium-rust-$($env:VERSION -replace '^v','')-$env:ARCHIVE"
+          $out = Join-Path $env:RUNNER_TEMP 'rust-windows'
+          Expand-Archive -LiteralPath $zip -DestinationPath $out -Force
+          $exe = Get-ChildItem -LiteralPath $out -Recurse -Filter 'Noctorium Rust.exe' | Select-Object -First 1
+          $bytes = [IO.File]::ReadAllBytes($exe.FullName)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          # The subsystem, 68 bytes into the optional header: 2 is a window program, 3 a console one.
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          Write-Host "Subsystem $subsystem"
+          if ($subsystem -ne 2) { throw "Noctorium Rust.exe is not a window program (subsystem $subsystem)" }
+          Add-Type -AssemblyName System.Drawing
+          $icon = [Drawing.Icon]::ExtractAssociatedIcon($exe.FullName)
+          Write-Host "Icon $($icon.Width)x$($icon.Height)"
+          Write-Host "Version $((Get-Item $exe.FullName).VersionInfo.ProductVersion)"
+
+      - name: A Linux program, and a menu entry that reads
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rust-linux"
+          mkdir -p "$dir"
+          tar -xzf "dist/noctorium-rust-${VERSION#v}-$ARCHIVE" -C "$dir"
+          program=$(find "$dir" -name noctorium-rust -type f | head -1)
+          file "$program"
+          file "$program" | grep -q 'ELF 64-bit.*x86-64'
+          test -x "$program"
+          desktop-file-validate "$(find "$dir" -name noctorium-rust.desktop | head -1)"
+          # For the record: what it needs of the distribution.
+          ldd "$program" || true
+
+      # A Mac: opened the way the installer opens it, with ditto, and asked what it is. The architecture has
+      # to be this Mac's; the version and the signature are said, and warned about rather than refused, as
+      # the packaging script is the README's to decide.
+      - name: A Mac application, for this kind of Mac
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/rust-mac"
+          mkdir -p "$dir"
+          ditto -x -k "dist/noctorium-rust-${VERSION#v}-$ARCHIVE" "$dir"
+          app="$dir/Noctorium Rust.app"
+          test -d "$app"
+          program="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          archs=$(lipo -archs "$program")
+          echo "$program: $archs"
+          case "$PLATFORM" in
+            macos-arm64) echo "$archs" | grep -qw arm64 ;;
+            macos-x64) echo "$archs" | grep -qw x86_64 ;;
+          esac
+          # Numbers and dots only, as a bundle's version has to be: 1.2.3-beta.1 is 1.2.3 there.
+          shown=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" || true)
+          version="${VERSION#v}"
+          echo "Finder shows version $shown"
+          if [ "$shown" != "${version%%[-+]*}" ]; then
+            echo "::warning::Noctorium Rust.app says it is version '$shown', not ${version%%[-+]*}."
+          fi
+          codesign --verify --deep --strict --verbose=2 "$app" || echo "::warning::Noctorium Rust.app's signature does not verify."
+
+      - name: The file, for the release
+        run: |
+          mkdir -p out
+          cp "dist/noctorium-rust-${VERSION#v}-$ARCHIVE" out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error

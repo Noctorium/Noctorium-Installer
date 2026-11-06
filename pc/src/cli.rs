@@ -15,15 +15,15 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 pub const USAGE: &str = "\
-Installs Noctorium, the music player, the Noctorium CLI, or Noctorium Stats -- any or all of them -- from
-the latest release on GitHub. It shows what it found and asks before it changes anything; every question
-has a default, which --yes takes.
+Installs Noctorium, the music player, the Noctorium CLI, Noctorium Stats or Noctorium Rust -- any or all
+of them -- from the latest release on GitHub. It shows what it found and asks before it changes
+anything; every question has a default, which --yes takes.
 
 Usage: noctorium-installer-cli [options]
 
   -y, --yes             ask nothing: take the defaults and install
-      --product WHAT    desktop (the default), cli, stats, both (Noctorium and the CLI) or all, or
-                        several joined by commas, such as desktop,stats
+      --product WHAT    desktop (the default), cli, stats, rust, both (Noctorium and the CLI) or all,
+                        or several joined by commas, such as desktop,stats
       --format HOW      Linux only: auto (the default), deb, rpm, arch, appimage or flatpak
       --wizard          Windows only: open the Noctorium setup's own wizard, to choose the folder it goes
                         in, rather than installing with a progress bar and nothing to click
@@ -46,10 +46,11 @@ Usage: noctorium-installer-cli [options]
   is: Windows asks for permission, and after that there is nothing to click. A release with no .msi has
   its setup .exe run instead. Neither Windows nor a Mac takes --format.
 
-  The Noctorium CLI and Noctorium Stats are installed for you alone, with no password: unpacked into a
-  folder of their own, %LOCALAPPDATA%\\Programs on Windows and ~/.local/share elsewhere, with the CLI on
-  your PATH and Stats in the Start menu or the applications menu. On a Mac, Noctorium Stats.app goes into
-  Applications beside Noctorium. Installing either again replaces it whole.
+  The Noctorium CLI, Noctorium Stats and Noctorium Rust are installed for you alone, with no password:
+  unpacked into a folder of their own, %LOCALAPPDATA%\\Programs on Windows and ~/.local/share elsewhere,
+  with the CLI on your PATH and Stats and Noctorium Rust in the Start menu or the applications menu. On a
+  Mac, Noctorium Stats.app and Noctorium Rust.app go into Applications beside Noctorium. Installing any of
+  them again replaces it whole. Noctorium Rust is the same player written in Rust, one native program.
 
   Everything chosen downloads at once, and each is installed as soon as its own download has been
   checked. Downloads are kept in the temporary folder, under noctorium-installer, until they are
@@ -75,6 +76,7 @@ Examples:
   noctorium-installer-cli --product both -y        Noctorium and the Noctorium CLI
   noctorium-installer-cli --product stats -y       Noctorium Stats, your listening in figures
   noctorium-installer-cli --product desktop,stats  Noctorium, and Noctorium Stats beside it
+  noctorium-installer-cli --product rust -y        Noctorium Rust, the player written in Rust
   noctorium-installer-cli --format appimage        the AppImage, whatever the distribution
   noctorium-installer-cli --wizard                 on Windows, choose the folder in the setup's own wizard
   noctorium-installer-cli --product both --download-only -y    fetch both now, install them later
@@ -174,7 +176,7 @@ pub fn parse(arguments: &[String]) -> Result<Request, UsageError> {
                 args.no_color = true
             }
             "--product" => {
-                let word = value("a product: desktop, cli, stats, both or all")?;
+                let word = value("a product: desktop, cli, stats, rust, both or all")?;
                 args.products = Some(parse_products("--product", &word)?);
             }
             "--format" => {
@@ -214,8 +216,8 @@ pub fn parse(arguments: &[String]) -> Result<Request, UsageError> {
 fn parse_products(from: &str, words: &str) -> Result<Products, UsageError> {
     Products::parse(words).ok_or_else(|| {
         UsageError(format!(
-            "{from} takes desktop, cli, stats, both (Noctorium and the CLI) or all, or several joined by \
-             commas, such as desktop,stats -- not \"{words}\"."
+            "{from} takes desktop, cli, stats, rust, both (Noctorium and the CLI) or all, or several joined \
+             by commas, such as desktop,stats -- not \"{words}\"."
         ))
     })
 }
@@ -498,6 +500,7 @@ fn show_files(term: &Term, found: &Found) {
         .filter_map(|offer| offer.asset.map(|a| (a.name, "Noctorium")))
         .chain(flow::cli_asset(found).map(|a| (a.name.clone(), "Noctorium CLI")))
         .chain(flow::stats_asset(found).map(|a| (a.name.clone(), "Noctorium Stats")))
+        .chain(flow::rust_asset(found).map(|a| (a.name.clone(), "Noctorium Rust")))
         .collect();
     let width = found
         .release
@@ -524,11 +527,12 @@ fn show_files(term: &Term, found: &Found) {
 // ---------------------------------------------------------------- questions
 
 /// The products, as a menu. The first three are what they were before Noctorium Stats, so an answer that
-/// was right then is right now -- 3 is still Noctorium and the CLI -- and Stats is the fourth; several
-/// numbers together choose all of them.
+/// was right then is right now -- 3 is still Noctorium and the CLI -- Stats is the fourth and Noctorium Rust
+/// the fifth; several numbers together choose all of them.
 fn choose_products(term: &Term, found: &Found) -> Result<Products, Failure> {
     let cli = flow::cli_asset(found).map(|a| a.size);
     let stats = flow::stats_asset(found).map(|a| a.size);
+    let rust = flow::rust_asset(found).map(|a| a.size);
     // What this machine would download for Noctorium, which on Linux is the format auto would pick.
     let desktop = flow::offers(found)
         .into_iter()
@@ -568,12 +572,19 @@ fn choose_products(term: &Term, found: &Found) -> Result<Products, Failure> {
             unavailable: stats.is_none().then(|| missing.clone()),
             recommended: false,
         },
+        Choice {
+            label: "Noctorium Rust".into(),
+            detail: sized("the player, written in Rust, in a window", rust),
+            unavailable: rust.is_none().then(|| missing.clone()),
+            recommended: false,
+        },
     ];
-    const PICKS: [Products; 4] = [
+    const PICKS: [Products; 5] = [
         Products::DESKTOP,
         Products::CLI,
         Products::BOTH,
         Products::STATS,
+        Products::RUST,
     ];
     let picked = term.menu("What would you like to install?", &choices, 0, true)?;
     Ok(picked
@@ -1694,6 +1705,11 @@ mod tests {
         assert_eq!(install("--product cli").products, Some(Products::CLI));
         assert_eq!(install("--product both").products, Some(Products::BOTH));
         assert_eq!(install("--product stats").products, Some(Products::STATS));
+        assert_eq!(install("--product rust").products, Some(Products::RUST));
+        assert_eq!(
+            install("--product desktop,rust").products,
+            Some(Products::DESKTOP.with(Products::RUST))
+        );
         assert_eq!(install("--product all").products, Some(Products::ALL));
         assert_eq!(
             install("--product=desktop,stats").products,
@@ -1705,7 +1721,8 @@ mod tests {
         );
         let why = refused("--product stats,charts");
         assert!(
-            why.contains("--product takes desktop, cli, stats") && why.contains("stats,charts"),
+            why.contains("--product takes desktop, cli, stats, rust")
+                && why.contains("stats,charts"),
             "{why}"
         );
         let why = parse_products("NOCTORIUM_PRODUCT", "everything")
@@ -1782,7 +1799,7 @@ mod tests {
 
     #[test]
     fn a_flag_without_its_value_says_what_it_wanted() {
-        assert!(refused("--product").contains("desktop, cli, stats, both or all"));
+        assert!(refused("--product").contains("desktop, cli, stats, rust, both or all"));
         assert!(refused("--format --yes").contains("auto, deb, rpm"));
         let why = refused("--version");
         assert!(
@@ -1842,8 +1859,9 @@ mod tests {
         assert!(USAGE.contains("--download-only"));
         assert!(USAGE.contains("NOCTORIUM_NO_PATH"));
         assert!(USAGE.contains("NOCTORIUM_PRODUCT"));
-        assert!(USAGE
-            .contains("desktop (the default), cli, stats, both (Noctorium and the CLI) or all"));
+        assert!(USAGE.contains(
+            "desktop (the default), cli, stats, rust, both (Noctorium and the CLI) or all"
+        ));
         // The usage is printed into terminals as narrow as a hundred and ten columns.
         for line in USAGE.lines() {
             assert!(line.chars().count() <= 106, "too wide: {line}");

@@ -1,7 +1,7 @@
 name: Packaging
 
-# Every Linux format, everything for the Mac, every PC installer and all of Noctorium Stats, built as a
-# release would build them, and attached to the run rather than to a release. This is how the packaging is
+# Every Linux format, everything for the Mac, every PC installer, all of Noctorium Stats and all of
+# Noctorium Rust, built as a release would build them, and attached to the run rather than to a release. This is how the packaging is
 # tried: push a branch named packaging/something, or run it by hand from the Actions tab against any branch
 # or commit of the desktop.
 #
@@ -28,6 +28,10 @@ on:
         default: 'main'
       stats_mobile_ref:
         description: 'Noctorium-Stats-Mobile branch, tag or commit to build'
+        required: false
+        default: 'main'
+      rust_ref:
+        description: 'Noctorium-Desktop-Rust branch, tag or commit to build'
         required: false
         default: 'main'
       version:
@@ -98,3 +102,11 @@ jobs:
       mobile_ref: ${{ inputs.stats_mobile_ref || 'main' }}
     # For the APK's signing key. Without it the APK is signed with the debug key, and says so.
     secrets: inherit
+
+  rust:
+    name: Noctorium Rust
+    needs: version
+    uses: ./.github/workflows/rust.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: ${{ inputs.rust_ref || 'main' }}

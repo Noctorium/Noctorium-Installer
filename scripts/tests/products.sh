@@ -11,7 +11,7 @@ set -eu
 script=${1:-scripts/install.sh}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-sed -n '/^choose_products() {$/,/^}$/p; /^has_stats() {$/,/^}$/p' "$script" > "$work/functions.sh"
+sed -n '/^choose_products() {$/,/^}$/p; /^has_stats() {$/,/^}$/p; /^has_file() {$/,/^}$/p' "$script" > "$work/functions.sh"
 # shellcheck source=/dev/null
 . "$work/functions.sh"
 
@@ -25,13 +25,19 @@ cp "$work/0.12.2.txt" "$work/0.13.0.txt"
 for name in noctorium-stats-0.13.0-linux-x64.tar.gz Noctorium-Stats-0.13.0.apk; do
     printf '%s  %s\r\n' "$hash" "$name"
 done >> "$work/0.13.0.txt"
+# 0.21.0: Stats and Noctorium Rust for every system.
+cp "$work/0.13.0.txt" "$work/0.21.0.txt"
+for name in noctorium-rust-0.21.0-linux-x64.tar.gz noctorium-rust-0.21.0-macos-arm64.zip \
+    noctorium-rust-0.21.0-macos-x64.zip noctorium-rust-0.21.0-windows-x64.zip; do
+    printf '%s  %s\n' "$hash" "$name"
+done >> "$work/0.21.0.txt"
 # Stats for a Mac and nothing else, in binary mode as some tools write it.
 cp "$work/0.12.2.txt" "$work/mac-only.txt"
 printf '%s  *%s\n' "$hash" noctorium-stats-0.13.0-macos-arm64.zip >> "$work/mac-only.txt"
 
 wrong=0
 # Set by choose_products, which ShellCheck cannot see from here.
-product='' stats_left_out='' nothing_left=''
+product='' stats_left_out='' rust_left_out='' nothing_left=''
 check() {
     expected="$1|$2|$3"
     shift 3
@@ -67,6 +73,21 @@ check 'desktop,cli,stats' '' '' Linux "$work/0.13.0.txt" --product all
 check stats '' '' Linux "$work/0.13.0.txt" --product=stats
 check '' 1 1 Darwin "$work/0.13.0.txt" --product stats
 check stats '' '' Darwin "$work/mac-only.txt" --product stats
+# Noctorium Rust: asked for alone, beside the rest, and from a release before it, where it is left out.
+check rust '' '' Linux "$work/0.21.0.txt" --product rust
+check rust '' '' Darwin "$work/0.21.0.txt" --product rust
+check 'desktop,cli,stats,rust' '' '' Linux "$work/0.21.0.txt" --product all
+check 'desktop,rust' '' '' Linux "$work/0.21.0.txt" --product Rust+desktop
+check '' '' 1 Linux "$work/0.13.0.txt" --product rust
+check 'desktop,cli,stats' '' '' Linux "$work/0.13.0.txt" --product all
+check both 1 '' Linux "$work/0.12.2.txt" --product all
+choose_products Linux "$work/0.13.0.txt" --product rust
+if [ "$rust_left_out" = 1 ]; then
+    echo "ok     --product rust on 0.13.0 says Noctorium Rust is left out"
+else
+    echo "WRONG  --product rust on 0.13.0 does not say Noctorium Rust is left out"
+    wrong=$((wrong + 1))
+fi
 # NOCTORIUM_PRODUCT, which --product wins over.
 NOCTORIUM_PRODUCT=stats
 check '' 1 1 Linux "$work/0.12.2.txt" --yes

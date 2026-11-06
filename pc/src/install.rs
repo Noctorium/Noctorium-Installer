@@ -45,6 +45,58 @@ pub const PROFILE_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
 /// found again.
 pub const WINDOWS_DISPLAY_NAME: &str = "Noctorium";
 
+/// A program of its own that comes as an archive and is installed for this user alone -- unpacked into a
+/// folder, given a shortcut or a menu entry, and on Windows listed in Apps & features -- rather than as a
+/// package: Noctorium Stats, and Noctorium Rust. Everything that differs between them is here; how they are
+/// installed is the same code.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Standalone {
+    /// As it is named everywhere a person sees it: the Start menu, Apps & features, the folder it is
+    /// unpacked into on Windows.
+    pub name: &'static str,
+    /// Its program on Windows, which is also the name Windows lists it under while it runs.
+    pub windows_program: &'static str,
+    /// Its program on Linux, and the command ~/.local/bin is given for it.
+    pub command: &'static str,
+    /// The application in the Mac's zip, and its name once installed.
+    pub mac_app: &'static str,
+    /// Where Windows keeps its entry in Apps & features, under this user's own list.
+    pub uninstall_key: &'static str,
+    /// What its shortcut and menu entry say it is.
+    pub comment: &'static str,
+    /// Its menu entry's generic name and categories, for an archive that brings no entry of its own.
+    pub generic_name: &'static str,
+    pub categories: &'static str,
+    /// The last words of how to start it, after where it is.
+    pub afterwards: &'static str,
+}
+
+/// Noctorium Stats: the listener's listening, in figures, from their Noctorium account.
+pub static STATS: Standalone = Standalone {
+    name: STATS_NAME,
+    windows_program: STATS_WINDOWS_PROGRAM,
+    command: STATS_COMMAND,
+    mac_app: STATS_MAC_APP,
+    uninstall_key: STATS_UNINSTALL_KEY,
+    comment: "Your listening, in figures, from your Noctorium account",
+    generic_name: "Listening statistics",
+    categories: "AudioVideo;Audio;",
+    afterwards: "It signs in with your Noctorium account.",
+};
+
+/// Noctorium Rust: Noctorium for the desktop, written in Rust -- the same player, as one native program.
+pub static RUST: Standalone = Standalone {
+    name: "Noctorium Rust",
+    windows_program: "Noctorium Rust.exe",
+    command: "noctorium-rust",
+    mac_app: "Noctorium Rust.app",
+    uninstall_key: r"Software\Microsoft\Windows\CurrentVersion\Uninstall\NoctoriumRust",
+    comment: "YouTube Music, SoundCloud and more, in one player written in Rust",
+    generic_name: "Music player",
+    categories: "AudioVideo;Audio;Player;",
+    afterwards: "Settings › Playback tools installs yt-dlp and mpv if they are not there yet.",
+};
+
 /// Noctorium Stats, as it is named everywhere a person sees it: the Start menu, Apps & features, the
 /// folder it is unpacked into on Windows.
 pub const STATS_NAME: &str = "Noctorium Stats";
@@ -97,6 +149,12 @@ pub enum Method {
     /// Noctorium Stats on a Mac: Noctorium Stats.app copied out of its zip into Applications, beside
     /// Noctorium.
     StatsMac,
+    /// Noctorium Rust on Windows, as Noctorium Stats is: its own folder, a shortcut, an Apps & features entry.
+    RustWindows,
+    /// Noctorium Rust on Linux, as Noctorium Stats is.
+    RustLinux,
+    /// Noctorium Rust on a Mac: Noctorium Rust.app copied out of its zip into Applications.
+    RustMac,
 }
 
 impl Method {
@@ -121,11 +179,47 @@ impl Method {
 
     /// How Noctorium Stats is installed on [os].
     pub fn stats_for(os: Os) -> Method {
-        match os {
-            Os::Windows => Method::StatsWindows,
-            Os::MacOs => Method::StatsMac,
-            Os::Linux | Os::Other(_) => Method::StatsLinux,
+        Method::standalone_for(&STATS, os)
+    }
+
+    /// How Noctorium Rust is installed on [os].
+    pub fn rust_for(os: Os) -> Method {
+        Method::standalone_for(&RUST, os)
+    }
+
+    /// How [program] is installed on [os].
+    pub fn standalone_for(program: &Standalone, os: Os) -> Method {
+        let rust = program == &RUST;
+        match (os, rust) {
+            (Os::Windows, false) => Method::StatsWindows,
+            (Os::MacOs, false) => Method::StatsMac,
+            (Os::Linux | Os::Other(_), false) => Method::StatsLinux,
+            (Os::Windows, true) => Method::RustWindows,
+            (Os::MacOs, true) => Method::RustMac,
+            (Os::Linux | Os::Other(_), true) => Method::RustLinux,
         }
+    }
+
+    /// The program of its own this installs, for the methods that install one.
+    pub fn standalone(self) -> Option<&'static Standalone> {
+        match self {
+            Method::StatsWindows | Method::StatsLinux | Method::StatsMac => Some(&STATS),
+            Method::RustWindows | Method::RustLinux | Method::RustMac => Some(&RUST),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a program of its own installed on Windows, Linux or a Mac, in that order of asking.
+    pub fn is_standalone_windows(self) -> bool {
+        matches!(self, Method::StatsWindows | Method::RustWindows)
+    }
+
+    pub fn is_standalone_linux(self) -> bool {
+        matches!(self, Method::StatsLinux | Method::RustLinux)
+    }
+
+    pub fn is_standalone_mac(self) -> bool {
+        matches!(self, Method::StatsMac | Method::RustMac)
     }
 
     /// The release file this takes.
@@ -145,6 +239,9 @@ impl Method {
             Method::StatsWindows => Wanted::StatsWindows,
             Method::StatsLinux => Wanted::StatsLinux,
             Method::StatsMac => Wanted::StatsMac,
+            Method::RustWindows => Wanted::RustWindows,
+            Method::RustLinux => Wanted::RustLinux,
+            Method::RustMac => Wanted::RustMac,
         }
     }
 
@@ -170,9 +267,10 @@ impl Method {
             Method::Flatpak => "Flatpak",
             Method::CliWindows => "folder of its own, on your PATH",
             Method::CliLinux | Method::CliMac => "folder of its own, linked into ~/.local/bin",
-            Method::StatsWindows => "folder of its own, in the Start menu",
-            Method::StatsLinux => "folder of its own, in the applications menu",
+            Method::StatsWindows | Method::RustWindows => "folder of its own, in the Start menu",
+            Method::StatsLinux | Method::RustLinux => "folder of its own, in the applications menu",
             Method::StatsMac => "Noctorium Stats.app, in Applications",
+            Method::RustMac => "Noctorium Rust.app, in Applications",
         }
     }
 
@@ -192,8 +290,11 @@ impl Method {
             | Method::CliLinux
             | Method::CliMac
             | Method::StatsWindows
-            | Method::StatsLinux => "for you alone, no administrator needed",
+            | Method::StatsLinux
+            | Method::RustWindows
+            | Method::RustLinux => "for you alone, no administrator needed",
             Method::StatsMac => "Noctorium Stats.app, copied into Applications as if dragged there",
+            Method::RustMac => "Noctorium Rust.app, copied into Applications as if dragged there",
         }
     }
 }
@@ -349,27 +450,45 @@ impl Places {
     /// Where Noctorium Stats is unpacked to: beside the Noctorium CLI, named as each system names its
     /// programs' folders.
     pub fn stats_folder(&self, windows: bool) -> Result<PathBuf, Problem> {
+        self.folder_of(&STATS, windows)
+    }
+
+    /// Where [program] is unpacked to: beside the Noctorium CLI, named as each system names its programs'
+    /// folders.
+    pub fn folder_of(&self, program: &Standalone, windows: bool) -> Result<PathBuf, Problem> {
         if windows {
-            Ok(self.need(&self.programs, "LOCALAPPDATA")?.join(STATS_NAME))
+            Ok(self
+                .need(&self.programs, "LOCALAPPDATA")?
+                .join(program.name))
         } else {
-            Ok(self.need(&self.data, "HOME")?.join(STATS_COMMAND))
+            Ok(self.need(&self.data, "HOME")?.join(program.command))
         }
     }
 
     /// Noctorium Stats' shortcut, at the top of this user's Start menu rather than in a folder of its
     /// own: one program needs no folder to find it in, and Windows 11 shows the top level first.
     pub fn stats_shortcut(&self) -> Result<PathBuf, Problem> {
+        self.shortcut_of(&STATS)
+    }
+
+    /// [program]'s shortcut, at the top of this user's Start menu.
+    pub fn shortcut_of(&self, program: &Standalone) -> Result<PathBuf, Problem> {
         Ok(self
             .need(&self.start_menu, "APPDATA")?
-            .join(format!("{STATS_NAME}.lnk")))
+            .join(format!("{}.lnk", program.name)))
     }
 
     /// Noctorium Stats' menu entry, beside the AppImage's.
     pub fn stats_menu_entry(&self) -> Result<PathBuf, Problem> {
+        self.menu_entry_of(&STATS)
+    }
+
+    /// [program]'s menu entry, beside the AppImage's.
+    pub fn menu_entry_of(&self, program: &Standalone) -> Result<PathBuf, Problem> {
         Ok(self
             .need(&self.data, "HOME")?
             .join("applications")
-            .join(format!("{STATS_COMMAND}.desktop")))
+            .join(format!("{}.desktop", program.command)))
     }
 
     /// The icon theme its icon goes into, in the folder for the icon's own size.
@@ -422,17 +541,24 @@ pub enum Action {
     PlaceApp { image: PathBuf, into: PathBuf },
     /// The line that puts ~/.local/bin on PATH, added once to the end of a shell profile.
     AddToProfile { profile: PathBuf },
-    /// Noctorium Stats unpacked into [into], in place of any older copy, and on Linux linked from [link].
+    /// A program of its own -- Noctorium Stats, Noctorium Rust -- unpacked into [into], in place of any
+    /// older copy, and on Linux linked from [link].
     UnpackStats {
+        program: &'static Standalone,
         archive: PathBuf,
         into: PathBuf,
         link: Option<PathBuf>,
     },
     /// A Start menu shortcut at [shortcut] to the program unpacked in [folder].
-    StartMenuShortcut { folder: PathBuf, shortcut: PathBuf },
+    StartMenuShortcut {
+        program: &'static Standalone,
+        folder: PathBuf,
+        shortcut: PathBuf,
+    },
     /// Noctorium Stats entered in Apps & features as [version], where it can be uninstalled the way any
     /// Windows program is: its folder, its shortcut and the entry itself taken away.
     ListInstalled {
+        program: &'static Standalone,
         folder: PathBuf,
         shortcut: PathBuf,
         version: String,
@@ -440,6 +566,7 @@ pub enum Action {
     /// The menu entry and icon unpacked in [folder] put where the desktop looks for them -- [entry], and
     /// the theme at [icons] -- pointing at the program beside them.
     MenuEntry {
+        program: &'static Standalone,
         folder: PathBuf,
         entry: PathBuf,
         icons: PathBuf,
@@ -557,41 +684,51 @@ pub fn actions_for(
             into: places.mac_applications()?,
         }],
         // Entered in Apps & features by the plan, which knows the version, rather than here.
-        Method::StatsWindows => {
-            let folder = places.stats_folder(true)?;
+        Method::StatsWindows | Method::RustWindows => {
+            let program = method.standalone().expect("a program of its own");
+            let folder = places.folder_of(program, true)?;
             vec![
                 Action::UnpackStats {
+                    program,
                     archive: file.to_path_buf(),
                     into: folder.clone(),
                     link: None,
                 },
                 Action::StartMenuShortcut {
+                    program,
                     folder,
-                    shortcut: places.stats_shortcut()?,
+                    shortcut: places.shortcut_of(program)?,
                 },
             ]
         }
         // On PATH as well as in the menu: it is a window, but one somebody may well start from the
         // terminal they were already in, as they would the Noctorium CLI beside it.
-        Method::StatsLinux => {
-            let folder = places.stats_folder(false)?;
+        Method::StatsLinux | Method::RustLinux => {
+            let program = method.standalone().expect("a program of its own");
+            let folder = places.folder_of(program, false)?;
             vec![
                 Action::UnpackStats {
+                    program,
                     archive: file.to_path_buf(),
                     into: folder.clone(),
-                    link: Some(places.user_bin()?.join(STATS_COMMAND)),
+                    link: Some(places.user_bin()?.join(program.command)),
                 },
                 Action::MenuEntry {
+                    program,
                     folder,
-                    entry: places.stats_menu_entry()?,
+                    entry: places.menu_entry_of(program)?,
                     icons: places.icon_theme()?,
                 },
             ]
         }
-        Method::StatsMac => vec![Action::PlaceZippedApp {
+        Method::StatsMac | Method::RustMac => vec![Action::PlaceZippedApp {
             archive: file.to_path_buf(),
             into: places.mac_applications()?,
-            app: STATS_MAC_APP.into(),
+            app: method
+                .standalone()
+                .expect("a program of its own")
+                .mac_app
+                .into(),
         }],
     };
     Ok(actions)
@@ -603,12 +740,22 @@ pub fn actions_for(
 /// Separate from [actions_for] because the version is the release's, which the plan has and the rest of
 /// the actions do not need.
 pub fn list_installed(places: &Places, version: &str) -> Result<Option<Action>, Problem> {
+    list_installed_as(&STATS, places, version)
+}
+
+/// The same for [program].
+pub fn list_installed_as(
+    program: &'static Standalone,
+    places: &Places,
+    version: &str,
+) -> Result<Option<Action>, Problem> {
     if places.leave_path {
         return Ok(None);
     }
     Ok(Some(Action::ListInstalled {
-        folder: places.stats_folder(true)?,
-        shortcut: places.stats_shortcut()?,
+        program,
+        folder: places.folder_of(program, true)?,
+        shortcut: places.shortcut_of(program)?,
         version: version.to_string(),
     }))
 }
@@ -724,8 +871,9 @@ impl Action {
             Action::StartMenuShortcut { shortcut, .. } => {
                 format!("add it to the Start menu, as {}", places.show(shortcut))
             }
-            Action::ListInstalled { .. } => format!(
-                "list it in Windows' installed apps, where it can be uninstalled (HKCU\\{STATS_UNINSTALL_KEY})"
+            Action::ListInstalled { program, .. } => format!(
+                "list it in Windows' installed apps, where it can be uninstalled (HKCU\\{})",
+                program.uninstall_key
             ),
             Action::MenuEntry { entry, icons, .. } => format!(
                 "add it to the applications menu as {}, with its icon in {}",
@@ -770,23 +918,28 @@ impl Action {
             Action::PlaceApp { image, into } => done(place_app(image, into)),
             Action::AddToProfile { profile } => done(add_to_profile(profile)),
             Action::UnpackStats {
+                program,
                 archive,
                 into,
                 link,
-            } => done(install_stats(archive, into, link.as_deref())),
-            Action::StartMenuShortcut { folder, shortcut } => {
-                done(start_menu_shortcut(folder, shortcut))
-            }
+            } => done(install_standalone(program, archive, into, link.as_deref())),
+            Action::StartMenuShortcut {
+                program,
+                folder,
+                shortcut,
+            } => done(start_menu_shortcut(program, folder, shortcut)),
             Action::ListInstalled {
+                program,
                 folder,
                 shortcut,
                 version,
-            } => done(list_in_installed_apps(folder, shortcut, version)),
+            } => done(list_in_installed_apps(program, folder, shortcut, version)),
             Action::MenuEntry {
+                program,
                 folder,
                 entry,
                 icons,
-            } => done(menu_entry(folder, entry, icons)),
+            } => done(menu_entry(program, folder, entry, icons)),
             Action::PlaceZippedApp { archive, into, app } => {
                 done(place_zipped_app(archive, into, app))
             }
@@ -810,18 +963,20 @@ pub fn check_before_download(method: Method) -> Result<(), Problem> {
     match method {
         Method::MacDiskImage => refuse_if_running(),
         Method::WindowsMsi => refuse_if_open_on_windows(),
-        Method::StatsWindows => refuse_if_stats_is_open(),
+        Method::StatsWindows | Method::RustWindows => {
+            refuse_if_standalone_is_open(method.standalone().expect("a program of its own"))
+        }
         _ => Ok(()),
     }
 }
 
-fn refuse_if_stats_is_open() -> Result<(), Problem> {
-    if crate::system::running(STATS_WINDOWS_PROGRAM) {
-        return Err(Problem::Local(
-            "Noctorium Stats is open. Close it and run this again: Windows cannot replace a program \
-             while it is running. Nothing has been changed."
-                .into(),
-        ));
+fn refuse_if_standalone_is_open(program: &Standalone) -> Result<(), Problem> {
+    if crate::system::running(program.windows_program) {
+        return Err(Problem::Local(format!(
+            "{} is open. Close it and run this again: Windows cannot replace a program while it is \
+             running. Nothing has been changed.",
+            program.name
+        )));
     }
     Ok(())
 }
@@ -1567,19 +1722,27 @@ fn link_launcher(_: &Path, _: &Path, _: &str) -> Result<(), Problem> {
 // ---------------------------------------------------------------- Noctorium Stats
 
 /// The program inside an unpacked Noctorium Stats.
+pub fn stats_program_in(folder: &Path, windows: bool) -> Option<PathBuf> {
+    program_in(&STATS, folder, windows)
+}
+
+/// The program inside an unpacked [program].
 ///
 /// Looked for rather than assumed, as the CLI's launcher is: the archive is published with it at the top,
 /// and one that puts it in a `bin` folder, or names it in the other system's way, still installs.
-pub fn stats_program_in(folder: &Path, windows: bool) -> Option<PathBuf> {
-    let candidates: &[&str] = if windows {
-        &[
-            STATS_WINDOWS_PROGRAM,
-            "noctorium-stats.exe",
-            "bin/Noctorium Stats.exe",
-            "bin/noctorium-stats.exe",
+pub fn program_in(program: &Standalone, folder: &Path, windows: bool) -> Option<PathBuf> {
+    let candidates: Vec<String> = if windows {
+        vec![
+            program.windows_program.to_string(),
+            format!("{}.exe", program.command),
+            format!("bin/{}", program.windows_program),
+            format!("bin/{}.exe", program.command),
         ]
     } else {
-        &[STATS_COMMAND, "bin/noctorium-stats"]
+        vec![
+            program.command.to_string(),
+            format!("bin/{}", program.command),
+        ]
     };
     candidates
         .iter()
@@ -1587,63 +1750,66 @@ pub fn stats_program_in(folder: &Path, windows: bool) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Unpacks Noctorium Stats into [into], in place of an older copy, and on Linux links [link] to it.
-fn install_stats(archive: &Path, into: &Path, link: Option<&Path>) -> Result<(), Problem> {
+/// Unpacks [program] into [into], in place of an older copy, and on Linux links [link] to it.
+fn install_standalone(
+    program: &Standalone,
+    archive: &Path,
+    into: &Path,
+    link: Option<&Path>,
+) -> Result<(), Problem> {
     // Asked again, because the download took long enough for somebody to have opened it.
     if cfg!(windows) {
-        refuse_if_stats_is_open()?;
+        refuse_if_standalone_is_open(program)?;
     }
-    unpack_stats(archive, into, link, cfg!(windows))
+    unpack_standalone(program, archive, into, link, cfg!(windows))
 }
 
-/// The part of [install_stats] that does not ask Windows what is running, which a test cannot answer for,
-/// and is told which system's program to look for, so either can be tried on any.
-fn unpack_stats(
+/// The part of [install_standalone] that does not ask Windows what is running, which a test cannot answer
+/// for, and is told which system's program to look for, so either can be tried on any.
+fn unpack_standalone(
+    program: &Standalone,
     archive: &Path,
     into: &Path,
     link: Option<&Path>,
     windows: bool,
 ) -> Result<(), Problem> {
-    archive::install_folder(archive, into, STATS_NAME)?;
-    let program = stats_program_in(into, windows).ok_or_else(|| {
+    archive::install_folder(archive, into, program.name)?;
+    let found = program_in(program, into, windows).ok_or_else(|| {
         Problem::Local(format!(
-            "Noctorium Stats was unpacked into {}, but its program is not in it ({}). The archive is \
-             not the shape this installer expects; the releases page has it to unpack by hand.",
+            "{} was unpacked into {}, but its program is not in it ({}). The archive is not the shape \
+             this installer expects; the releases page has it to unpack by hand.",
+            program.name,
             into.display(),
-            if windows {
-                STATS_WINDOWS_PROGRAM
-            } else {
-                STATS_COMMAND
-            }
+            if windows { program.windows_program } else { program.command }
         ))
     })?;
     match link {
-        Some(link) => link_launcher(&program, link, STATS_NAME),
+        Some(link) => link_launcher(&found, link, program.name),
         None => Ok(()),
     }
 }
 
-/// The Start menu shortcut at [shortcut], to the program in [folder], which starts in that folder.
-fn start_menu_shortcut(folder: &Path, shortcut: &Path) -> Result<(), Problem> {
-    let program = stats_program_in(folder, true).ok_or_else(|| {
+/// The Start menu shortcut at [shortcut], to [program] in [folder], which starts in that folder.
+fn start_menu_shortcut(
+    program: &Standalone,
+    folder: &Path,
+    shortcut: &Path,
+) -> Result<(), Problem> {
+    let found = program_in(program, folder, true).ok_or_else(|| {
         Problem::Local(format!(
-            "There is no {STATS_WINDOWS_PROGRAM} in {} to make a shortcut to.",
+            "There is no {} in {} to make a shortcut to.",
+            program.windows_program,
             folder.display()
         ))
     })?;
     if let Some(parent) = shortcut.parent() {
         fs::create_dir_all(parent).map_err(|e| couldnt("make", parent, e))?;
     }
-    shortcut::create(
-        &program,
-        folder,
-        "Your listening, in figures, from your Noctorium account",
-        shortcut,
-    )
-    .map_err(|why| {
+    shortcut::create(&found, folder, program.comment, shortcut).map_err(|why| {
         Problem::Local(format!(
-            "Noctorium Stats is installed in {}, but its Start menu shortcut could not be made: {why}. \
-             It can be started from that folder.",
+            "{} is installed in {}, but its Start menu shortcut could not be made: {why}. It can be \
+             started from that folder.",
+            program.name,
             folder.display()
         ))
     })
@@ -1662,14 +1828,26 @@ pub fn installed_app_values(
     version: &str,
     kilobytes: u32,
 ) -> Vec<(&'static str, Value)> {
-    let program = folder.join(STATS_WINDOWS_PROGRAM);
+    installed_values_of(&STATS, folder, shortcut, version, kilobytes)
+}
+
+/// The same for [standalone].
+pub fn installed_values_of(
+    standalone: &Standalone,
+    folder: &Path,
+    shortcut: &Path,
+    version: &str,
+    kilobytes: u32,
+) -> Vec<(&'static str, Value)> {
+    let program = folder.join(standalone.windows_program);
+    let process = standalone.windows_program.trim_end_matches(".exe");
     let uninstall = format!(
         "\"{}\" {}",
         powershell().display(),
-        uninstall_arguments("Noctorium Stats", folder, shortcut, STATS_UNINSTALL_KEY)
+        uninstall_arguments(process, folder, shortcut, standalone.uninstall_key)
     );
     vec![
-        ("DisplayName", Value::Text(STATS_NAME.into())),
+        ("DisplayName", Value::Text(standalone.name.into())),
         ("DisplayVersion", Value::Text(version.into())),
         ("Publisher", Value::Text("Noctorium".into())),
         (
@@ -1754,9 +1932,14 @@ fn bytes_in(folder: &Path) -> u64 {
         .sum()
 }
 
-/// Enters Noctorium Stats in this user's list of installed programs.
+/// Enters [program] in this user's list of installed programs.
 #[cfg(windows)]
-fn list_in_installed_apps(folder: &Path, shortcut: &Path, version: &str) -> Result<(), Problem> {
+fn list_in_installed_apps(
+    program: &Standalone,
+    folder: &Path,
+    shortcut: &Path,
+    version: &str,
+) -> Result<(), Problem> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_DWORD, REG_SZ,
@@ -1764,16 +1947,16 @@ fn list_in_installed_apps(folder: &Path, shortcut: &Path, version: &str) -> Resu
     let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() };
     let failed = |code: u32| {
         Problem::Local(format!(
-            "Noctorium Stats is installed, but could not be listed among Windows' installed apps \
-             (Windows error {code}). It works all the same; to remove it, delete {} and its Start menu \
-             shortcut.",
+            "{} is installed, but could not be listed among Windows' installed apps (Windows error \
+             {code}). It works all the same; to remove it, delete {} and its Start menu shortcut.",
+            program.name,
             folder.display()
         ))
     };
     let kilobytes = u32::try_from(bytes_in(folder).div_ceil(1024)).unwrap_or(u32::MAX);
-    let values = installed_app_values(folder, shortcut, version, kilobytes);
+    let values = installed_values_of(program, folder, shortcut, version, kilobytes);
 
-    let subkey = wide(STATS_UNINSTALL_KEY);
+    let subkey = wide(program.uninstall_key);
     let mut key: HKEY = std::ptr::null_mut();
     // SAFETY: the name is NUL-terminated and outlives the call; the key is written only when the call
     // succeeds, and closed on every way out below.
@@ -1816,7 +1999,7 @@ fn list_in_installed_apps(folder: &Path, shortcut: &Path, version: &str) -> Resu
 }
 
 #[cfg(not(windows))]
-fn list_in_installed_apps(_: &Path, _: &Path, _: &str) -> Result<(), Problem> {
+fn list_in_installed_apps(_: &Standalone, _: &Path, _: &Path, _: &str) -> Result<(), Problem> {
     Err(Problem::Local(
         "The list of installed apps is Windows', and this is not Windows.".into(),
     ))
@@ -1829,21 +2012,27 @@ fn list_in_installed_apps(_: &Path, _: &Path, _: &str) -> Result<(), Problem> {
 /// installed package would -- `noctorium-stats`, found on PATH -- and a desktop started before
 /// ~/.local/bin existed has a PATH without it. Absolute paths are found whatever the session's PATH is. An
 /// archive with no entry, or no icon, gets one written here, with Noctorium's mark.
-fn menu_entry(folder: &Path, entry: &Path, icons: &Path) -> Result<(), Problem> {
-    let program = stats_program_in(folder, false).ok_or_else(|| {
+fn menu_entry(
+    standalone: &Standalone,
+    folder: &Path,
+    entry: &Path,
+    icons: &Path,
+) -> Result<(), Problem> {
+    let command = standalone.command;
+    let program = program_in(standalone, folder, false).ok_or_else(|| {
         Problem::Local(format!(
-            "There is no {STATS_COMMAND} in {} to add to the menu.",
+            "There is no {command} in {} to add to the menu.",
             folder.display()
         ))
     })?;
-    let shipped_icon = fs::read(folder.join(format!("{STATS_COMMAND}.png"))).ok();
+    let shipped_icon = fs::read(folder.join(format!("{command}.png"))).ok();
     let icon_bytes = shipped_icon.as_deref().unwrap_or(ICON);
     let side = png_side(icon_bytes).unwrap_or(128);
     let icon = icons
         .join(format!("{side}x{side}"))
         .join("apps")
-        .join(format!("{STATS_COMMAND}.png"));
-    let shipped_entry = fs::read(folder.join(format!("{STATS_COMMAND}.desktop")))
+        .join(format!("{command}.png"));
+    let shipped_entry = fs::read(folder.join(format!("{command}.desktop")))
         .ok()
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
 
@@ -1851,7 +2040,7 @@ fn menu_entry(folder: &Path, entry: &Path, icons: &Path) -> Result<(), Problem> 
         fs::create_dir_all(parent).map_err(|e| couldnt("make", parent, e))?;
     }
     fs::write(&icon, icon_bytes).map_err(|e| couldnt("write", &icon, e))?;
-    let written = stats_desktop_entry(shipped_entry.as_deref(), &program, &icon);
+    let written = desktop_entry_of(standalone, shipped_entry.as_deref(), &program, &icon);
     fs::write(entry, written).map_err(|e| couldnt("write", entry, e))?;
 
     // As for the AppImage's: for the desktops that keep a cache of the menu.
@@ -1885,6 +2074,17 @@ pub fn png_side(bytes: &[u8]) -> Option<u32> {
 ///
 /// An entry with no `Exec` for it to point somewhere, or none at all, is written here in full.
 pub fn stats_desktop_entry(shipped: Option<&str>, program: &Path, icon: &Path) -> String {
+    desktop_entry_of(&STATS, shipped, program, icon)
+}
+
+/// The same for [standalone].
+pub fn desktop_entry_of(
+    standalone: &Standalone,
+    shipped: Option<&str>,
+    program: &Path,
+    icon: &Path,
+) -> String {
+    let runs_it = |first: &str| runs(standalone, first);
     // An Exec line is a command line, quoted and escaped as one; TryExec and Icon are plain values, in
     // which only the backslash is special.
     let exec = exec_argument(&program.to_string_lossy());
@@ -1901,17 +2101,17 @@ pub fn stats_desktop_entry(shipped: Option<&str>, program: &Path, icon: &Path) -
                 };
                 match key.trim() {
                     "Exec" => match value.trim().split_once(char::is_whitespace) {
-                        Some((first, rest)) if runs_stats(first) => {
+                        Some((first, rest)) if runs_it(first) => {
                             pointed = true;
                             format!("Exec={exec} {}", rest.trim_start())
                         }
-                        None if runs_stats(value.trim()) => {
+                        None if runs_it(value.trim()) => {
                             pointed = true;
                             format!("Exec={exec}")
                         }
                         _ => line.to_string(),
                     },
-                    "TryExec" if runs_stats(value.trim()) => format!("TryExec={try_exec}"),
+                    "TryExec" if runs_it(value.trim()) => format!("TryExec={try_exec}"),
                     "Icon" => format!("Icon={icon}"),
                     _ => line.to_string(),
                 }
@@ -1924,21 +2124,26 @@ pub fn stats_desktop_entry(shipped: Option<&str>, program: &Path, icon: &Path) -
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name={STATS_NAME}\n\
-         GenericName=Listening statistics\n\
-         Comment=Your listening, in figures, from your Noctorium account\n\
+         Name={}\n\
+         GenericName={}\n\
+         Comment={}\n\
          Exec={exec}\n\
          Icon={icon}\n\
          Terminal=false\n\
-         Categories=AudioVideo;Audio;\n\
-         StartupWMClass={STATS_COMMAND}\n"
+         Categories={}\n\
+         StartupWMClass={}\n",
+        standalone.name,
+        standalone.generic_name,
+        standalone.comment,
+        standalone.categories,
+        standalone.command
     )
 }
 
-/// Whether the program an `Exec` line starts with is Noctorium Stats', by any path or none.
-fn runs_stats(program: &str) -> bool {
+/// Whether the program an `Exec` line starts with is [standalone]'s, by any path or none.
+fn runs(standalone: &Standalone, program: &str) -> bool {
     let program = program.trim_matches('"');
-    program == STATS_COMMAND || program.ends_with(&format!("/{STATS_COMMAND}"))
+    program == standalone.command || program.ends_with(&format!("/{}", standalone.command))
 }
 
 /// Making a Start menu shortcut, which is a COM object and nothing else: the `.lnk` format is Windows'
@@ -2298,28 +2503,34 @@ pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> 
                 .map(|profile| places.show(&profile))
                 .unwrap_or_else(|_| "~/.zprofile".into())
         ),
-        Method::StatsWindows => {
-            "Start it from the Start menu, where it is Noctorium Stats. It signs in with your \
-             Noctorium account."
-                .into()
+        Method::StatsWindows | Method::RustWindows => {
+            let program = method.standalone().expect("a program of its own");
+            format!("Start it from the Start menu, where it is {}. {}", program.name, program.afterwards)
         }
-        Method::StatsLinux => format!(
-            "Start it from your applications menu, or run {}. It signs in with your Noctorium account.",
-            if user_bin_on_path {
-                STATS_COMMAND.to_string()
-            } else {
-                format!("~/.local/bin/{STATS_COMMAND}")
-            }
-        ),
+        Method::StatsLinux | Method::RustLinux => {
+            let program = method.standalone().expect("a program of its own");
+            format!(
+                "Start it from your applications menu, or run {}. {}",
+                if user_bin_on_path {
+                    program.command.to_string()
+                } else {
+                    format!("~/.local/bin/{}", program.command)
+                },
+                program.afterwards
+            )
+        }
         // Quoted, since the name has a space in it and this is for pasting into a terminal.
-        Method::StatsMac => format!(
-            "Start it from Launchpad or Spotlight, or with open \"{}\". It signs in with your \
-             Noctorium account.",
-            places
-                .mac_applications()
-                .map(|folder| places.show(&folder.join(STATS_MAC_APP)))
-                .unwrap_or_else(|_| format!("/Applications/{STATS_MAC_APP}"))
-        ),
+        Method::StatsMac | Method::RustMac => {
+            let program = method.standalone().expect("a program of its own");
+            format!(
+                "Start it from Launchpad or Spotlight, or with open \"{}\". {}",
+                places
+                    .mac_applications()
+                    .map(|folder| places.show(&folder.join(program.mac_app)))
+                    .unwrap_or_else(|_| format!("/Applications/{}", program.mac_app)),
+                program.afterwards
+            )
+        }
     }
 }
 
@@ -3191,11 +3402,13 @@ mod tests {
             actions,
             vec![
                 Action::UnpackStats {
+                    program: &STATS,
                     archive: PathBuf::from(r"C:\Temp\noctorium-stats-1.0.0-windows-x64.zip"),
                     into: folder.clone(),
                     link: None,
                 },
                 Action::StartMenuShortcut {
+                    program: &STATS,
                     folder: folder.clone(),
                     shortcut: PathBuf::from(r"C:\Users\Sam\AppData\Roaming\Start Menu\Programs")
                         .join("Noctorium Stats.lnk"),
@@ -3208,6 +3421,7 @@ mod tests {
         assert_eq!(
             list_installed(&windows, "1.0.0").unwrap(),
             Some(Action::ListInstalled {
+                program: &STATS,
                 folder,
                 shortcut: PathBuf::from(r"C:\Users\Sam\AppData\Roaming\Start Menu\Programs")
                     .join("Noctorium Stats.lnk"),
@@ -3245,11 +3459,13 @@ mod tests {
             linux,
             vec![
                 Action::UnpackStats {
+                    program: &STATS,
                     archive: PathBuf::from("/tmp/noctorium-stats-1.0.0-linux-x64.tar.gz"),
                     into: PathBuf::from("/home/sam/.local/share/noctorium-stats"),
                     link: Some(PathBuf::from("/home/sam/.local/bin/noctorium-stats")),
                 },
                 Action::MenuEntry {
+                    program: &STATS,
                     folder: PathBuf::from("/home/sam/.local/share/noctorium-stats"),
                     entry: PathBuf::from(
                         "/home/sam/.local/share/applications/noctorium-stats.desktop"
@@ -3314,10 +3530,10 @@ mod tests {
             &first,
             &[("Noctorium Stats.exe", "MZ one"), ("old-only.dll", "stale")],
         );
-        unpack_stats(&first, &into, None, true).expect("first install");
+        unpack_standalone(&STATS, &first, &into, None, true).expect("first install");
         let second = here.join("noctorium-stats-1.1.0-windows-x64.zip");
         zip_file(&second, &[("Noctorium Stats.exe", "MZ two")]);
-        unpack_stats(&second, &into, None, true).expect("upgrade");
+        unpack_standalone(&STATS, &second, &into, None, true).expect("upgrade");
         assert_eq!(
             fs::read_to_string(into.join("Noctorium Stats.exe")).unwrap(),
             "MZ two"
@@ -3334,7 +3550,7 @@ mod tests {
             &foldered,
             &[("noctorium-stats/Noctorium Stats.exe", "MZ three")],
         );
-        unpack_stats(&foldered, &into, None, true).expect("installs");
+        unpack_standalone(&STATS, &foldered, &into, None, true).expect("installs");
         assert_eq!(
             fs::read_to_string(into.join("Noctorium Stats.exe")).unwrap(),
             "MZ three"
@@ -3347,7 +3563,7 @@ mod tests {
         let archive = here.join("noctorium-stats-1.0.0-windows-x64.zip");
         zip_file(&archive, &[("README.txt", "nothing to run")]);
         let into = here.join("Noctorium Stats");
-        let said = unpack_stats(&archive, &into, None, true)
+        let said = unpack_standalone(&STATS, &archive, &into, None, true)
             .unwrap_err()
             .to_string();
         assert!(said.contains("its program is not in it"), "{said}");
@@ -3375,7 +3591,7 @@ mod tests {
         );
         let folder = here.join("share").join("noctorium-stats");
         let link = here.join("bin").join("noctorium-stats");
-        unpack_stats(&archive, &folder, Some(&link), false).expect("unpacks");
+        unpack_standalone(&STATS, &archive, &folder, Some(&link), false).expect("unpacks");
         let program = folder.join("noctorium-stats");
         assert_eq!(stats_program_in(&folder, false), Some(program.clone()));
         #[cfg(unix)]
@@ -3388,7 +3604,7 @@ mod tests {
 
         let entry = here.join("share/applications/noctorium-stats.desktop");
         let icons = here.join("share/icons/hicolor");
-        menu_entry(&folder, &entry, &icons).expect("in the menu");
+        menu_entry(&STATS, &folder, &entry, &icons).expect("in the menu");
         let written = fs::read_to_string(&entry).unwrap();
         // Not a PNG, so its size cannot be read, and it goes where a 128-pixel icon would.
         let icon = icons
@@ -3426,7 +3642,7 @@ mod tests {
         fs::write(folder.join("noctorium-stats"), "#!/bin/sh\n").unwrap();
         let entry = here.join("applications/noctorium-stats.desktop");
         let icons = here.join("icons/hicolor");
-        menu_entry(&folder, &entry, &icons).expect("in the menu");
+        menu_entry(&STATS, &folder, &entry, &icons).expect("in the menu");
         let icon = icons.join("128x128/apps/noctorium-stats.png");
         assert_eq!(fs::read(&icon).unwrap(), ICON);
         let written = fs::read_to_string(&entry).unwrap();
@@ -3435,7 +3651,7 @@ mod tests {
 
         let missing = here.join("empty");
         fs::create_dir_all(&missing).unwrap();
-        assert!(menu_entry(&missing, &entry, &icons).is_err());
+        assert!(menu_entry(&STATS, &missing, &entry, &icons).is_err());
     }
 
     #[test]
@@ -3672,7 +3888,7 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("Noctorium Stats.exe"), "MZ").unwrap();
         let shortcut = here.join("Start Menu").join("Noctorium Stats.lnk");
-        start_menu_shortcut(&folder, &shortcut).expect("made");
+        start_menu_shortcut(&STATS, &folder, &shortcut).expect("made");
         assert!(shortcut.is_file());
         let read = Command::new(powershell())
             .args(["-NoProfile", "-NonInteractive", "-Command"])
@@ -3699,6 +3915,6 @@ mod tests {
 
         let empty = here.join("empty");
         fs::create_dir_all(&empty).unwrap();
-        assert!(start_menu_shortcut(&empty, &here.join("x.lnk")).is_err());
+        assert!(start_menu_shortcut(&STATS, &empty, &here.join("x.lnk")).is_err());
     }
 }

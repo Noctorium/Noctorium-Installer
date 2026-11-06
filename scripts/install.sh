@@ -13,8 +13,9 @@
 # found and asks before it changes anything; --help lists what else it takes. Its exit status is this
 # script's: 0 when it did what was asked, 1 when it did not, 2 when the options were not understood.
 #
-# It offers Noctorium, the Noctorium CLI and Noctorium Stats, which shows what you have listened to:
-# --product desktop, cli, stats, both (Noctorium and the CLI) or all, or several joined by commas, such as
+# It offers Noctorium, the Noctorium CLI, Noctorium Stats, which shows what you have listened to, and
+# Noctorium Rust, the player written in Rust: --product desktop, cli, stats, rust, both (Noctorium and the
+# CLI) or all, or several joined by commas, such as
 # desktop,stats. NOCTORIUM_PRODUCT in the environment says the same, for when options are awkward:
 #
 #   curl -fsSL https://noctorium.vercel.app/install | NOCTORIUM_PRODUCT=stats sh
@@ -101,6 +102,9 @@ main() {
     if [ -n "$stats_left_out" ]; then
         say "Noctorium Stats is not in the latest release yet, so it is left out, and nothing is downloaded for it."
     fi
+    if [ -n "$rust_left_out" ]; then
+        say "Noctorium Rust is not in the latest release yet, so it is left out, and nothing is downloaded for it."
+    fi
     if [ -n "$nothing_left" ]; then
         say "Nothing else was asked for, so nothing has been installed."
         return 0
@@ -178,13 +182,14 @@ main() {
 #
 #   product         the --product to run the installer with, or nothing to pass the options on unchanged
 #   stats_left_out  set when Noctorium Stats was asked for and the release has none for this machine
+#   rust_left_out   the same for Noctorium Rust, which came later still
 #   nothing_left    set when that was all that was asked for, and there is nothing to run the installer for
 #
 # Unchanged when nothing was asked for, which is the installer's own question to ask; when what was asked
 # is not something this knows, which is the installer's to refuse, with its exit status of 2; and when the
 # options ask for help, a version or a listing, which install nothing.
 choose_products() {
-    product='' stats_left_out='' nothing_left=''
+    product='' stats_left_out='' rust_left_out='' nothing_left=''
     for_system=$1 listing=$2
     shift 2
     asked=${NOCTORIUM_PRODUCT:-} next=''
@@ -205,7 +210,7 @@ choose_products() {
     fi
     case $asked in -*) return 0 ;; esac
 
-    desktop='' cli='' stats='' known=1
+    desktop='' cli='' stats='' rust='' known=1
     words=$(printf '%s' "$asked" | tr 'A-Z,+' 'a-z  ')
     # Split on spaces and nothing else: a * in what somebody typed is not a list of files.
     set -f
@@ -214,8 +219,9 @@ choose_products() {
             desktop) desktop=1 ;;
             cli) cli=1 ;;
             stats) stats=1 ;;
+            rust) rust=1 ;;
             both) desktop=1 cli=1 ;;
-            all) desktop=1 cli=1 stats=1 ;;
+            all) desktop=1 cli=1 stats=1 rust=1 ;;
             *) known='' ;;
         esac
     done
@@ -226,11 +232,15 @@ choose_products() {
     if [ -n "$stats" ] && ! has_stats "$for_system" "$listing"; then
         stats='' stats_left_out=1
     fi
-    # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats is only
-    # still here when the release, and so its installer, has it. Without Stats, the words every installer
-    # has always taken.
-    if [ -n "$stats" ]; then
-        product=${desktop:+desktop,}${cli:+cli,}stats
+    if [ -n "$rust" ] && ! has_file noctorium-rust "$for_system" "$listing"; then
+        rust='' rust_left_out=1
+    fi
+    # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats, or
+    # Noctorium Rust, is only still here when the release, and so its installer, has it. Without either,
+    # the words every installer has always taken.
+    if [ -n "$stats" ] || [ -n "$rust" ]; then
+        product=${desktop:+desktop,}${cli:+cli,}${stats:+stats,}${rust:+rust,}
+        product=${product%,}
     elif [ -n "$desktop" ] && [ -n "$cli" ]; then
         product=both
     elif [ -n "$desktop" ]; then
@@ -245,11 +255,17 @@ choose_products() {
 # Whether the checksums ($2) list a Noctorium Stats for this system ($1): the Linux archive, or either of
 # the Mac's, since which one a Mac takes is the installer's to work out.
 has_stats() {
-    case $1 in
-        Darwin) shape='^noctorium-stats-[0-9][^/]*-macos-(arm64|x64)[.]zip$' ;;
-        *) shape='^noctorium-stats-[0-9][^/]*-linux-x64[.]tar[.]gz$' ;;
+    has_file noctorium-stats "$1" "$2"
+}
+
+# Whether the checksums ($3) list the archive named $1 -- noctorium-stats, noctorium-rust -- for this system
+# ($2), as Noctorium Stats' and Noctorium Rust's are named alike.
+has_file() {
+    case $2 in
+        Darwin) shape="^$1-[0-9][^/]*-macos-(arm64|x64)[.]zip\$" ;;
+        *) shape="^$1-[0-9][^/]*-linux-x64[.]tar[.]gz\$" ;;
     esac
-    tr -d '\r' < "$2" | awk -v shape="$shape" '
+    tr -d '\r' < "$3" | awk -v shape="$shape" '
         { file = $2; sub(/^\*/, "", file) }
         file ~ shape { found = 1 }
         END { exit found ? 0 : 1 }'

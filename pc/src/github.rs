@@ -194,6 +194,12 @@ pub enum Wanted {
     StatsLinux,
     /// `noctorium-stats-<version>-macos-arm64.zip`, or `-macos-x64.zip`: `Noctorium Stats.app`.
     StatsMac,
+    /// `noctorium-rust-<version>-windows-x64.zip`, Noctorium Rust: `Noctorium Rust.exe` on its own.
+    RustWindows,
+    /// `noctorium-rust-<version>-linux-x64.tar.gz`: the program, its menu entry and its icon.
+    RustLinux,
+    /// `noctorium-rust-<version>-macos-arm64.zip`, or `-macos-x64.zip`: `Noctorium Rust.app`.
+    RustMac,
 }
 
 impl Wanted {
@@ -235,6 +241,16 @@ impl Wanted {
                 format!("-linux-{}.tar.gz", arch.windows()),
             ),
             Wanted::StatsMac => ("noctorium-stats-", format!("-macos-{}.zip", arch.windows())),
+            // Named exactly as Noctorium Stats' are.
+            Wanted::RustWindows => (
+                "noctorium-rust-",
+                format!("-windows-{}.zip", arch.windows()),
+            ),
+            Wanted::RustLinux => (
+                "noctorium-rust-",
+                format!("-linux-{}.tar.gz", arch.windows()),
+            ),
+            Wanted::RustMac => ("noctorium-rust-", format!("-macos-{}.zip", arch.windows())),
         }
     }
 
@@ -456,6 +472,9 @@ mod tests {
         Wanted::StatsWindows,
         Wanted::StatsLinux,
         Wanted::StatsMac,
+        Wanted::RustWindows,
+        Wanted::RustLinux,
+        Wanted::RustMac,
     ];
 
     fn picked(release: &Release, wanted: Wanted, arch: Arch) -> Option<&str> {
@@ -606,6 +625,8 @@ mod tests {
                 (Wanted::CliMac, _) => Some("noctorium-cli-0.8.0-macos-x64.tar.gz"),
                 // Noctorium Stats came later.
                 (Wanted::StatsWindows | Wanted::StatsLinux | Wanted::StatsMac, _) => None,
+                // And Noctorium Rust later still.
+                (Wanted::RustWindows | Wanted::RustLinux | Wanted::RustMac, _) => None,
             }
         };
         for arch in [Arch::X86_64, Arch::Aarch64] {
@@ -620,6 +641,52 @@ mod tests {
                 assert_eq!(matching, expected, "{wanted:?} on {arch:?}");
             }
         }
+    }
+
+    /// 0.21.0's shape: everything 0.13 had, and Noctorium Rust's four archives, named as Stats' are.
+    #[test]
+    fn with_noctorium_rust_beside_it_each_file_still_answers_only_for_its_own() {
+        let mut json = RELEASE_WITH_STATS.replace("0.13.0", "0.21.0");
+        let rust = [
+            "noctorium-rust-0.21.0-windows-x64.zip",
+            "noctorium-rust-0.21.0-linux-x64.tar.gz",
+            "noctorium-rust-0.21.0-macos-arm64.zip",
+            "noctorium-rust-0.21.0-macos-x64.zip",
+        ];
+        let added: String = rust
+            .iter()
+            .map(|name| format!(r#"{{"name": "{name}", "browser_download_url": "https://example.test/{name}", "size": 9000000}},"#))
+            .collect();
+        let at = json.find('[').expect("the assets") + 1;
+        json.insert_str(at, &added);
+        let release = Release::from_json(&json).expect("should parse");
+        assert_eq!(release.assets.len(), 31);
+        let x64 = Arch::X86_64;
+        let arm = Arch::Aarch64;
+        assert_eq!(picked(&release, Wanted::RustWindows, x64), Some(rust[0]));
+        assert_eq!(picked(&release, Wanted::RustLinux, x64), Some(rust[1]));
+        assert_eq!(picked(&release, Wanted::RustMac, arm), Some(rust[2]));
+        assert_eq!(picked(&release, Wanted::RustMac, x64), Some(rust[3]));
+        // Nothing else answers for them, nor they for anything else.
+        for &wanted in EVERY_WANTED {
+            for arch in [x64, arm] {
+                if let Some(name) = picked(&release, wanted, arch) {
+                    let ours = matches!(
+                        wanted,
+                        Wanted::RustWindows | Wanted::RustLinux | Wanted::RustMac
+                    );
+                    assert_eq!(
+                        name.starts_with("noctorium-rust-"),
+                        ours,
+                        "{wanted:?} on {arch:?} took {name}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            picked(&release, Wanted::StatsWindows, x64),
+            Some("noctorium-stats-0.21.0-windows-x64.zip")
+        );
     }
 
     /// The same, with Noctorium Stats beside everything else: its archives are named like the Noctorium
@@ -649,6 +716,7 @@ mod tests {
                 (Wanted::StatsWindows, _) => Some("noctorium-stats-0.13.0-windows-x64.zip"),
                 (Wanted::StatsLinux, _) => Some("noctorium-stats-0.13.0-linux-x64.tar.gz"),
                 (Wanted::StatsMac, _) => Some("noctorium-stats-0.13.0-macos-x64.zip"),
+                (Wanted::RustWindows | Wanted::RustLinux | Wanted::RustMac, _) => None,
             }
         };
         for arch in [Arch::X86_64, Arch::Aarch64] {
