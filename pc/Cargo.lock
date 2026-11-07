@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "noctorium-installer"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "eframe",
  "flate2",
