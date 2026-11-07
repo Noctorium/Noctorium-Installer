@@ -160,10 +160,10 @@ default, and `--yes` takes them all, so the same program serves somebody at a pr
 installing Noctorium on a row of machines.
 
 ```
-  ♫ Noctorium  installer 0.21.0
+  ♫ Noctorium  installer 0.21.1
 
   System    Ubuntu 24.04.1 LTS · x86-64 · apt, flatpak
-  Release   v0.21.0 (the latest)
+  Release   v0.21.1 (the latest)
 
   What would you like to install?
     1  Noctorium        the music player, in a window, 242.7 MB  recommended
