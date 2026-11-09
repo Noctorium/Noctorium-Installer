@@ -90,6 +90,8 @@ jobs:
           if ! grep -q 'Noctorium Stats' all.txt; then echo 'Noctorium Stats was neither planned nor said to be missing'; exit 1; fi
           # And Noctorium Rust, likewise, which comes from 0.21.0 on.
           if ! grep -q 'Noctorium Rust' all.txt; then echo 'Noctorium Rust was neither planned nor said to be missing'; exit 1; fi
+          # And Noctorium Song Find, which comes from 0.27.0 on.
+          if ! grep -q 'Noctorium Song Find' all.txt; then echo 'Noctorium Song Find was neither planned nor said to be missing'; exit 1; fi
           # Usage errors are 2, not 1, so a script can tell a typo from a failed install.
           status=0; "$cli" --not-an-option 2> /dev/null || status=$?
           test "$status" = 2

@@ -1,6 +1,7 @@
 /// Noctorium's installer for a phone.
 ///
-/// One screen and a button for each thing it installs: Noctorium, and Noctorium Stats beside it. It asks
+/// One screen and a button for each thing it installs: Noctorium, and Noctorium Stats and Noctorium Song
+/// Find beside it. It asks
 /// GitHub for the latest release, downloads the APK, checks it against the checksum published beside it,
 /// and hands it to Android's own package installer -- which then shows its own screen and asks again, and
 /// the first time also sends you to a settings page to allow this application to install others at all.
@@ -35,7 +36,8 @@ typedef ReleaseLookup = Future<Release> Function();
 /// What this installs.
 enum Product {
   noctorium('Noctorium'),
-  stats('Noctorium Stats');
+  stats('Noctorium Stats'),
+  songFind('Noctorium Song Find');
 
   const Product(this.title);
 
@@ -45,6 +47,7 @@ enum Product {
   Asset? apkIn(Release release) => switch (this) {
         Product.noctorium => release.apk,
         Product.stats => release.statsApk,
+        Product.songFind => release.songFindApk,
       };
 }
 
@@ -88,7 +91,7 @@ class InstallerScreen extends StatefulWidget {
 class _InstallerScreenState extends State<InstallerScreen> {
   Stage _stage = Stage.idle;
   String _message = 'Install the latest Noctorium on this phone, or Noctorium Stats, which shows what '
-      'you have listened to.';
+      'you have listened to, or Noctorium Song Find, which says which song is playing.';
   double? _progress;
   String? _version;
 
@@ -106,6 +109,9 @@ class _InstallerScreenState extends State<InstallerScreen> {
   /// Whether Noctorium Stats can be installed from the latest release: false only when it was asked, and
   /// said no.
   bool get _statsThere => _latest == null || _latest!.statsApk != null;
+
+  /// The same for Noctorium Song Find.
+  bool get _songFindThere => _latest == null || _latest!.songFindApk != null;
 
   @override
   void initState() {
@@ -140,12 +146,12 @@ class _InstallerScreenState extends State<InstallerScreen> {
       _latest = release;
       final apk = product.apkIn(release);
       final checksums = release.checksums;
-      if (apk == null && product == Product.stats) {
-        // Not a failure: a release from before Stats, which is every release until one carries it.
+      if (apk == null && product != Product.noctorium) {
+        // Not a failure: a release from before it, which is every release until one carries it.
         setState(() {
           _version = release.tag;
           _stage = Stage.unavailable;
-          _message = 'Noctorium Stats is not in ${release.tag} yet, so there is nothing to install for it. '
+          _message = '${product.title} is not in ${release.tag} yet, so there is nothing to install for it. '
               'It is new, and the release that first carries it will have it. Noctorium itself is there.';
         });
         return;
@@ -349,6 +355,18 @@ class _InstallerScreenState extends State<InstallerScreen> {
               FilledButton.tonal(
                 onPressed: _busy || !_statsThere ? null : () => _install(Product.stats),
                 child: Text(_label(Product.stats)),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                _songFindThere
+                    ? 'Noctorium Song Find: which song is playing, from the microphone or the phone itself.'
+                    : 'Noctorium Song Find is not in ${_latest!.tag} yet.',
+                style: quiet,
+              ),
+              const SizedBox(height: 10),
+              FilledButton.tonal(
+                onPressed: _busy || !_songFindThere ? null : () => _install(Product.songFind),
+                child: Text(_label(Product.songFind)),
               ),
             ],
           ),

@@ -25,6 +25,8 @@ $before = (@('Noctorium-0.12.2-windows-x64.msi', 'noctorium-cli-0.12.2-windows-x
 $with = $before + "`r`n$hash  noctorium-stats-0.13.0-windows-x64.zip`r`n$hash  Noctorium-Stats-0.13.0.apk`r`n"
 # 0.21.0: Stats and Noctorium Rust.
 $rust = $with + "$hash  noctorium-rust-0.21.0-windows-x64.zip`n$hash  noctorium-rust-0.21.0-linux-x64.tar.gz`n"
+# 0.27.0: Noctorium Song Find as well.
+$songFind = $rust + "$hash  noctorium-song-find-0.27.0-windows-x64.zip`n$hash  Noctorium-Song-Find-0.27.0.apk`n"
 # Stats for Linux and the phone, and nothing for Windows.
 $notForWindows = $before + "`n$hash  noctorium-stats-0.13.0-linux-x64.tar.gz`n$hash  *Noctorium-Stats-0.13.0.apk`n"
 
@@ -70,6 +72,18 @@ if ((Resolve-Product @('--product', 'rust') $with).RustLeftOut) {
     Write-Host 'ok     --product rust on 0.13.0 says Noctorium Rust is left out'
 } else {
     Write-Host 'WRONG  --product rust on 0.13.0 does not say Noctorium Rust is left out'
+    $script:wrong++
+}
+# Noctorium Song Find, the same way.
+Test-Choice 'song-find|False|False' $songFind @('--product', 'song-find')
+Test-Choice 'desktop,cli,stats,rust,song-find|False|False' $songFind @('--product', 'all')
+Test-Choice 'desktop,song-find|False|False' $songFind @('--product', 'Song-Find+desktop')
+Test-Choice '|False|True' $rust @('--product', 'song-find')
+Test-Choice 'desktop,cli,stats,rust|False|False' $rust @('--product', 'all')
+if ((Resolve-Product @('--product', 'song-find') $rust).SongFindLeftOut) {
+    Write-Host 'ok     --product song-find on 0.21.0 says Noctorium Song Find is left out'
+} else {
+    Write-Host 'WRONG  --product song-find on 0.21.0 does not say Noctorium Song Find is left out'
     $script:wrong++
 }
 # NOCTORIUM_PRODUCT, which --product wins over.

@@ -13,6 +13,18 @@ From 0.21.0 every release also carries **Noctorium Rust**: Noctorium for the des
 native program, for Windows, Linux and both kinds of Mac, offered by every PC installer beside the rest and
 installed the way Noctorium Stats is.
 
+From 0.27.0 every release also carries **Noctorium Song Find**, which says which song is playing — through the
+microphone, or from what the computer or phone itself is playing — from
+[Noctorium-song-find-desktop-rust](https://github.com/Noctorium/Noctorium-song-find-desktop-rust) for Windows,
+Linux and both kinds of Mac, and [Noctorium-song-find-mobile-dart](https://github.com/Noctorium/Noctorium-song-find-mobile-dart)
+for Android. Every installer offers it, and it updates itself as the rest do.
+
+On Android, every app here also works with [Obtainium](https://github.com/ImranR98/Obtainium): add this
+repository as the source and set *Filter APKs by regular expression* to `^Noctorium-[0-9].*[.]apk$`,
+`^Noctorium-Stats-[0-9].*[.]apk$` or `^Noctorium-Song-Find-[0-9].*[.]apk$`. The
+[website](https://noctorium.vercel.app/#obtainium) and the organisation's page have a button for each that
+sets this up in one tap.
+
 Every release also carries **Noctorium Stats**, which signs in to your Noctorium account and shows what you
 have listened to: songs, artists, hours, the services, the time of day. It is a program of its own, beside
 the player rather than part of it — for the computer from
@@ -160,10 +172,10 @@ default, and `--yes` takes them all, so the same program serves somebody at a pr
 installing Noctorium on a row of machines.
 
 ```
-  ♫ Noctorium  installer 0.26.0
+  ♫ Noctorium  installer 0.27.0
 
   System    Ubuntu 24.04.1 LTS · x86-64 · apt, flatpak
-  Release   v0.26.0 (the latest)
+  Release   v0.27.0 (the latest)
 
   What would you like to install?
     1  Noctorium        the music player, in a window, 242.7 MB  recommended
@@ -171,13 +183,14 @@ installing Noctorium on a row of machines.
     3  Both             Noctorium and the CLI, 306.1 MB, at once
     4  Noctorium Stats  your listening, in figures, in a window, 7.3 MB
     5  Noctorium Rust   the player, written in Rust, in a window, 9.1 MB
-  Choose 1-5, or several, such as 1 4 [1]
+    6  Noctorium Song Find  which song is playing, in a window, 8.4 MB
+  Choose 1-6, or several, such as 1 4 [1]
 ```
 
 | Option | |
 | --- | --- |
 | `-y`, `--yes` | Ask nothing: take the defaults and install. |
-| `--product desktop\|cli\|stats\|rust\|both\|all` | Noctorium (the default), the Noctorium CLI, Noctorium Stats, Noctorium Rust, Noctorium and the CLI, or all four — or several joined by commas, such as `desktop,stats`. `NOCTORIUM_PRODUCT` says the same when there is no `--product`. |
+| `--product desktop\|cli\|stats\|rust\|song-find\|both\|all` | Noctorium (the default), the Noctorium CLI, Noctorium Stats, Noctorium Rust, Noctorium Song Find, Noctorium and the CLI, or all five — or several joined by commas, such as `desktop,stats`. `NOCTORIUM_PRODUCT` says the same when there is no `--product`. |
 | `--format auto\|deb\|rpm\|arch\|appimage\|flatpak` | Linux only. `auto` is the distribution's own package where there is one, and the AppImage everywhere else. |
 | `--wizard` | Windows only. Open the `.msi`'s own pages, to choose the folder, rather than installing with a progress bar and nothing to click. |
 | `--version X.Y.Z` | Install release `vX.Y.Z` rather than the latest. |
@@ -255,6 +268,11 @@ with a Start menu shortcut and an entry in Installed apps under `...\Uninstall\N
 Applications. Its own update button runs the terminal installer for it once its window has closed. Asked of
 a release from before 0.21.0, the installer leaves it out and says so, as it does Stats.
 
+**Noctorium Song Find** is installed the same way again, from `noctorium-song-find-<version>-windows-x64.zip`
+(`Noctorium Song Find.exe`), `-linux-x64.tar.gz` and `-macos-arm64.zip` or `-macos-x64.zip`, under
+`...\Uninstall\NoctoriumSongFind` on Windows and as `noctorium-song-find` on Linux; `--product song-find`.
+Asked of a release from before 0.27.0, it is left out with a word.
+
 To try the install somewhere it can do no harm, point `LOCALAPPDATA` and `APPDATA` (Windows) or `HOME` at
 a folder of your own and set `NOCTORIUM_NO_PATH=1`: the CLI and Noctorium Stats are unpacked in there,
 Stats' shortcut goes into that folder's Start menu, and your PATH, a Mac's `~/.zprofile` and Windows' list
@@ -314,8 +332,9 @@ sudo apt-get install musl-tools && rustup target add x86_64-unknown-linux-musl
 | The Noctorium CLI | `noctorium-cli-<version>-windows-x64.zip`, `noctorium-cli-<version>-linux-x64.tar.gz`, `noctorium-cli-<version>-macos-arm64.tar.gz`, `noctorium-cli-<version>-macos-x64.tar.gz`, in the releases that carry it |
 | Noctorium Stats | `noctorium-stats-<version>-windows-x64.zip` (`Noctorium Stats.exe`), `noctorium-stats-<version>-linux-x64.tar.gz` (`noctorium-stats`, its `.desktop` file and its icon), `noctorium-stats-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Stats.app`), and `Noctorium-Stats-<version>.apk`, from 0.13.0 on |
 | Noctorium Rust | `noctorium-rust-<version>-windows-x64.zip` (`Noctorium Rust.exe`), `noctorium-rust-<version>-linux-x64.tar.gz` (`noctorium-rust`, its `.desktop` file and its icon), `noctorium-rust-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Rust.app`), from 0.21.0 on |
+| Noctorium Song Find | `noctorium-song-find-<version>-windows-x64.zip` (`Noctorium Song Find.exe`), `-linux-x64.tar.gz` (`noctorium-song-find`, its `.desktop` file and its icon), `-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Song Find.app`), and `Noctorium-Song-Find-<version>.apk`, from 0.27.0 on |
 
-A release is thirty-one files: these thirty and `SHA256SUMS.txt`. The release job counts them, and
+A release is thirty-six files: these thirty-five and `SHA256SUMS.txt`. The release job counts them, and
 refuses to make a draft that is short of one.
 
 On a Mac, take the disk image for its processor — Apple menu, About This Mac, says Chip for Apple silicon
@@ -397,7 +416,9 @@ opened again and checked to be named and shaped as the installers expect, and th
 key as Noctorium's. The steps that build it are the stats repositories' READMEs', marked as such, so a
 change to how either is built is one step to change. Noctorium Rust is built by
 `.github/workflows/rust.yml` the same way, from Noctorium-Desktop-Rust's `packaging/package.sh`, so
-Noctorium-Desktop-Rust has to carry the tag too. It is a draft
+Noctorium-Desktop-Rust has to carry the tag too. Noctorium Song Find is built by
+`.github/workflows/song-find.yml`, the desktop as Noctorium Rust is and the APK as Noctorium Stats' is, so
+Noctorium-song-find-desktop-rust and Noctorium-song-find-mobile-dart carry the tag as well. It is a draft
 on purpose — read it, check the files are the sizes you expect, write the notes, and publish it yourself.
 
 Tagging only this repository fails in the first minute, and the message does not say why: the checkout of
@@ -464,6 +485,7 @@ installed; a release without one is refused with a link to the page instead.
 | Unzipped folder, or Gradle | Told there is an update, and sent to the release page |
 | Noctorium Stats | Run the installer again, which replaces it whole; on a phone, the phone installer's Stats button |
 | Noctorium Rust | Settings, About and updates, Install it: the terminal installer runs for it once the window has closed |
+| Noctorium Song Find | On Windows it installs itself: the release's zip, checked against GitHub's SHA-256 and swapped in place, ready at the next start. On a Mac and Linux, Install runs the terminal installer once the window has closed. On a phone, Install downloads the APK, checks it, and hands it to Android's installer |
 
 ## The three shapes of the version
 

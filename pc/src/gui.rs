@@ -98,6 +98,7 @@ struct Wanted {
     cli: bool,
     stats: bool,
     rust: bool,
+    song_find: bool,
     /// The .msi's own wizard, for choosing the folder. Windows only.
     wizard: bool,
 }
@@ -109,6 +110,7 @@ impl Default for Wanted {
             cli: false,
             stats: false,
             rust: false,
+            song_find: false,
             wizard: false,
         }
     }
@@ -116,7 +118,13 @@ impl Default for Wanted {
 
 impl Wanted {
     fn products(&self) -> Option<Products> {
-        Products::from_choice(self.desktop, self.cli, self.stats, self.rust)
+        Products::from_choice(
+            self.desktop,
+            self.cli,
+            self.stats,
+            self.rust,
+            self.song_find,
+        )
     }
 }
 
@@ -137,6 +145,8 @@ struct Choosing {
     stats_size: Option<u64>,
     /// Noctorium Rust's download, or nothing when this release has none for this machine.
     rust_size: Option<u64>,
+    /// Noctorium Song Find's download, or nothing when this release has none for this machine.
+    song_find_size: Option<u64>,
     plan: Result<Plan, String>,
 }
 
@@ -147,6 +157,7 @@ impl Choosing {
         let cli_size = flow::cli_asset(&found).map(|a| a.size);
         let stats_size = flow::stats_asset(&found).map(|a| a.size);
         let rust_size = flow::rust_asset(&found).map(|a| a.size);
+        let song_find_size = flow::song_find_asset(&found).map(|a| a.size);
         let mut choosing = Choosing {
             found,
             offers,
@@ -155,11 +166,13 @@ impl Choosing {
                 cli: wanted.cli && cli_size.is_some(),
                 stats: wanted.stats && stats_size.is_some(),
                 rust: wanted.rust && rust_size.is_some(),
+                song_find: wanted.song_find && song_find_size.is_some(),
                 ..wanted
             },
             cli_size,
             stats_size,
             rust_size,
+            song_find_size,
             plan: Err(String::new()),
         };
         choosing.replan();
@@ -428,6 +441,7 @@ impl Gui {
                 self.wanted.cli = failed(Product::Cli);
                 self.wanted.stats = failed(Product::Stats);
                 self.wanted.rust = failed(Product::Rust);
+                self.wanted.song_find = failed(Product::SongFind);
             }
             self.look(ctx);
         }
@@ -488,7 +502,8 @@ fn ready(
             match plan.items.len() {
                 2 => "both",
                 3 => "all three",
-                _ => "all four",
+                4 => "all four",
+                _ => "all five",
             }
         ),
         Ok(plan) => format!("{:.0} MB to download", plan.megabytes_to_download()),
@@ -498,6 +513,7 @@ fn ready(
             let cli = choosing.cli_size.filter(|_| wanted.cli);
             let stats = choosing.stats_size.filter(|_| wanted.stats);
             let rust = choosing.rust_size.filter(|_| wanted.rust);
+            let song_find = choosing.song_find_size.filter(|_| wanted.song_find);
             format!(
                 "{} to download",
                 megabytes(
@@ -505,6 +521,7 @@ fn ready(
                         + cli.unwrap_or(0)
                         + stats.unwrap_or(0)
                         + rust.unwrap_or(0)
+                        + song_find.unwrap_or(0)
                 )
             )
         }
@@ -570,6 +587,18 @@ fn ready(
             ui.add_enabled(
                 choosing.rust_size.is_some(),
                 egui::Checkbox::new(&mut wanted.rust, rust),
+            )
+            .on_disabled_hover_text(missing.as_str());
+            ui.add_space(4.0);
+            let song_find = product_label(
+                ui,
+                "Noctorium Song Find",
+                &or_missing("which song is playing", choosing.song_find_size),
+                choosing.song_find_size,
+            );
+            ui.add_enabled(
+                choosing.song_find_size.is_some(),
+                egui::Checkbox::new(&mut wanted.song_find, song_find),
             )
             .on_disabled_hover_text(missing.as_str());
         },

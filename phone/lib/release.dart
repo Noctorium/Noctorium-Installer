@@ -59,10 +59,15 @@ class Release {
   /// which every release before Stats does not.
   Asset? get statsApk => _first(_stats);
 
+  /// Noctorium Song Find's APK, `Noctorium-Song-Find-<version>.apk`, or null when the release carries
+  /// none -- which every release before 0.27.0 does not.
+  Asset? get songFindApk => _first(_songFind);
+
   /// A version starts with a digit, which is what keeps `Noctorium-Stats-...` and
   /// `Noctorium-Installer-...` from answering for `Noctorium-<version>`.
   static final RegExp _noctorium = RegExp(r'^noctorium-\d[^/]*\.apk$', caseSensitive: false);
   static final RegExp _stats = RegExp(r'^noctorium-stats-\d[^/]*\.apk$', caseSensitive: false);
+  static final RegExp _songFind = RegExp(r'^noctorium-song-find-\d[^/]*\.apk$', caseSensitive: false);
 
   Asset? _first(RegExp shape) {
     for (final asset in assets) {

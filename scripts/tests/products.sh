@@ -31,13 +31,20 @@ for name in noctorium-rust-0.21.0-linux-x64.tar.gz noctorium-rust-0.21.0-macos-a
     noctorium-rust-0.21.0-macos-x64.zip noctorium-rust-0.21.0-windows-x64.zip; do
     printf '%s  %s\n' "$hash" "$name"
 done >> "$work/0.21.0.txt"
+# 0.27.0: Noctorium Song Find as well.
+cp "$work/0.21.0.txt" "$work/0.27.0.txt"
+for name in noctorium-song-find-0.27.0-linux-x64.tar.gz noctorium-song-find-0.27.0-macos-arm64.zip \
+    noctorium-song-find-0.27.0-macos-x64.zip noctorium-song-find-0.27.0-windows-x64.zip \
+    Noctorium-Song-Find-0.27.0.apk; do
+    printf '%s  %s\n' "$hash" "$name"
+done >> "$work/0.27.0.txt"
 # Stats for a Mac and nothing else, in binary mode as some tools write it.
 cp "$work/0.12.2.txt" "$work/mac-only.txt"
 printf '%s  *%s\n' "$hash" noctorium-stats-0.13.0-macos-arm64.zip >> "$work/mac-only.txt"
 
 wrong=0
 # Set by choose_products, which ShellCheck cannot see from here.
-product='' stats_left_out='' rust_left_out='' nothing_left=''
+product='' stats_left_out='' rust_left_out='' song_find_left_out='' nothing_left=''
 check() {
     expected="$1|$2|$3"
     shift 3
@@ -86,6 +93,20 @@ if [ "$rust_left_out" = 1 ]; then
     echo "ok     --product rust on 0.13.0 says Noctorium Rust is left out"
 else
     echo "WRONG  --product rust on 0.13.0 does not say Noctorium Rust is left out"
+    wrong=$((wrong + 1))
+fi
+# Noctorium Song Find, the same way.
+check song-find '' '' Linux "$work/0.27.0.txt" --product song-find
+check song-find '' '' Darwin "$work/0.27.0.txt" --product song-find
+check 'desktop,cli,stats,rust,song-find' '' '' Linux "$work/0.27.0.txt" --product all
+check 'desktop,song-find' '' '' Linux "$work/0.27.0.txt" --product Song-Find+desktop
+check '' '' 1 Linux "$work/0.21.0.txt" --product song-find
+check 'desktop,cli,stats,rust' '' '' Linux "$work/0.21.0.txt" --product all
+choose_products Linux "$work/0.21.0.txt" --product song-find
+if [ "$song_find_left_out" = 1 ]; then
+    echo "ok     --product song-find on 0.21.0 says Noctorium Song Find is left out"
+else
+    echo "WRONG  --product song-find on 0.21.0 does not say Noctorium Song Find is left out"
     wrong=$((wrong + 1))
 fi
 # NOCTORIUM_PRODUCT, which --product wins over.

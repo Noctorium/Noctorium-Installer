@@ -97,6 +97,20 @@ pub static RUST: Standalone = Standalone {
     afterwards: "Settings › Playback tools installs yt-dlp and mpv if they are not there yet.",
 };
 
+/// Noctorium Song Find: which song is playing, from the microphone or from the computer's own sound.
+pub static SONG_FIND: Standalone = Standalone {
+    name: "Noctorium Song Find",
+    windows_program: "Noctorium Song Find.exe",
+    command: "noctorium-song-find",
+    mac_app: "Noctorium Song Find.app",
+    uninstall_key: r"Software\Microsoft\Windows\CurrentVersion\Uninstall\NoctoriumSongFind",
+    comment: "Find out which song is playing, from the microphone or the computer's own sound",
+    generic_name: "Song recognition",
+    categories: "AudioVideo;Audio;",
+    afterwards:
+        "Shazam needs nothing set up; Settings › Providers adds AudD, ACRCloud and AcoustID.",
+};
+
 /// Noctorium Stats, as it is named everywhere a person sees it: the Start menu, Apps & features, the
 /// folder it is unpacked into on Windows.
 pub const STATS_NAME: &str = "Noctorium Stats";
@@ -155,6 +169,12 @@ pub enum Method {
     RustLinux,
     /// Noctorium Rust on a Mac: Noctorium Rust.app copied out of its zip into Applications.
     RustMac,
+    /// Noctorium Song Find on Windows, as Noctorium Stats is.
+    SongFindWindows,
+    /// Noctorium Song Find on Linux, as Noctorium Stats is.
+    SongFindLinux,
+    /// Noctorium Song Find on a Mac: Noctorium Song Find.app copied out of its zip into Applications.
+    SongFindMac,
 }
 
 impl Method {
@@ -187,16 +207,28 @@ impl Method {
         Method::standalone_for(&RUST, os)
     }
 
+    /// How Noctorium Song Find is installed on [os].
+    pub fn song_find_for(os: Os) -> Method {
+        Method::standalone_for(&SONG_FIND, os)
+    }
+
     /// How [program] is installed on [os].
     pub fn standalone_for(program: &Standalone, os: Os) -> Method {
-        let rust = program == &RUST;
-        match (os, rust) {
-            (Os::Windows, false) => Method::StatsWindows,
-            (Os::MacOs, false) => Method::StatsMac,
-            (Os::Linux | Os::Other(_), false) => Method::StatsLinux,
-            (Os::Windows, true) => Method::RustWindows,
-            (Os::MacOs, true) => Method::RustMac,
-            (Os::Linux | Os::Other(_), true) => Method::RustLinux,
+        let (windows, mac, linux) = if program == &RUST {
+            (Method::RustWindows, Method::RustMac, Method::RustLinux)
+        } else if program == &SONG_FIND {
+            (
+                Method::SongFindWindows,
+                Method::SongFindMac,
+                Method::SongFindLinux,
+            )
+        } else {
+            (Method::StatsWindows, Method::StatsMac, Method::StatsLinux)
+        };
+        match os {
+            Os::Windows => windows,
+            Os::MacOs => mac,
+            Os::Linux | Os::Other(_) => linux,
         }
     }
 
@@ -205,21 +237,33 @@ impl Method {
         match self {
             Method::StatsWindows | Method::StatsLinux | Method::StatsMac => Some(&STATS),
             Method::RustWindows | Method::RustLinux | Method::RustMac => Some(&RUST),
+            Method::SongFindWindows | Method::SongFindLinux | Method::SongFindMac => {
+                Some(&SONG_FIND)
+            }
             _ => None,
         }
     }
 
     /// Whether this is a program of its own installed on Windows, Linux or a Mac, in that order of asking.
     pub fn is_standalone_windows(self) -> bool {
-        matches!(self, Method::StatsWindows | Method::RustWindows)
+        matches!(
+            self,
+            Method::StatsWindows | Method::RustWindows | Method::SongFindWindows
+        )
     }
 
     pub fn is_standalone_linux(self) -> bool {
-        matches!(self, Method::StatsLinux | Method::RustLinux)
+        matches!(
+            self,
+            Method::StatsLinux | Method::RustLinux | Method::SongFindLinux
+        )
     }
 
     pub fn is_standalone_mac(self) -> bool {
-        matches!(self, Method::StatsMac | Method::RustMac)
+        matches!(
+            self,
+            Method::StatsMac | Method::RustMac | Method::SongFindMac
+        )
     }
 
     /// The release file this takes.
@@ -242,6 +286,9 @@ impl Method {
             Method::RustWindows => Wanted::RustWindows,
             Method::RustLinux => Wanted::RustLinux,
             Method::RustMac => Wanted::RustMac,
+            Method::SongFindWindows => Wanted::SongFindWindows,
+            Method::SongFindLinux => Wanted::SongFindLinux,
+            Method::SongFindMac => Wanted::SongFindMac,
         }
     }
 
@@ -267,10 +314,15 @@ impl Method {
             Method::Flatpak => "Flatpak",
             Method::CliWindows => "folder of its own, on your PATH",
             Method::CliLinux | Method::CliMac => "folder of its own, linked into ~/.local/bin",
-            Method::StatsWindows | Method::RustWindows => "folder of its own, in the Start menu",
-            Method::StatsLinux | Method::RustLinux => "folder of its own, in the applications menu",
+            Method::StatsWindows | Method::RustWindows | Method::SongFindWindows => {
+                "folder of its own, in the Start menu"
+            }
+            Method::StatsLinux | Method::RustLinux | Method::SongFindLinux => {
+                "folder of its own, in the applications menu"
+            }
             Method::StatsMac => "Noctorium Stats.app, in Applications",
             Method::RustMac => "Noctorium Rust.app, in Applications",
+            Method::SongFindMac => "Noctorium Song Find.app, in Applications",
         }
     }
 
@@ -292,9 +344,14 @@ impl Method {
             | Method::StatsWindows
             | Method::StatsLinux
             | Method::RustWindows
-            | Method::RustLinux => "for you alone, no administrator needed",
+            | Method::RustLinux
+            | Method::SongFindWindows
+            | Method::SongFindLinux => "for you alone, no administrator needed",
             Method::StatsMac => "Noctorium Stats.app, copied into Applications as if dragged there",
             Method::RustMac => "Noctorium Rust.app, copied into Applications as if dragged there",
+            Method::SongFindMac => {
+                "Noctorium Song Find.app, copied into Applications as if dragged there"
+            }
         }
     }
 }
@@ -684,7 +741,7 @@ pub fn actions_for(
             into: places.mac_applications()?,
         }],
         // Entered in Apps & features by the plan, which knows the version, rather than here.
-        Method::StatsWindows | Method::RustWindows => {
+        Method::StatsWindows | Method::RustWindows | Method::SongFindWindows => {
             let program = method.standalone().expect("a program of its own");
             let folder = places.folder_of(program, true)?;
             vec![
@@ -703,7 +760,7 @@ pub fn actions_for(
         }
         // On PATH as well as in the menu: it is a window, but one somebody may well start from the
         // terminal they were already in, as they would the Noctorium CLI beside it.
-        Method::StatsLinux | Method::RustLinux => {
+        Method::StatsLinux | Method::RustLinux | Method::SongFindLinux => {
             let program = method.standalone().expect("a program of its own");
             let folder = places.folder_of(program, false)?;
             vec![
@@ -721,7 +778,7 @@ pub fn actions_for(
                 },
             ]
         }
-        Method::StatsMac | Method::RustMac => vec![Action::PlaceZippedApp {
+        Method::StatsMac | Method::RustMac | Method::SongFindMac => vec![Action::PlaceZippedApp {
             archive: file.to_path_buf(),
             into: places.mac_applications()?,
             app: method
@@ -963,7 +1020,7 @@ pub fn check_before_download(method: Method) -> Result<(), Problem> {
     match method {
         Method::MacDiskImage => refuse_if_running(),
         Method::WindowsMsi => refuse_if_open_on_windows(),
-        Method::StatsWindows | Method::RustWindows => {
+        Method::StatsWindows | Method::RustWindows | Method::SongFindWindows => {
             refuse_if_standalone_is_open(method.standalone().expect("a program of its own"))
         }
         _ => Ok(()),
@@ -2503,11 +2560,11 @@ pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> 
                 .map(|profile| places.show(&profile))
                 .unwrap_or_else(|_| "~/.zprofile".into())
         ),
-        Method::StatsWindows | Method::RustWindows => {
+        Method::StatsWindows | Method::RustWindows | Method::SongFindWindows => {
             let program = method.standalone().expect("a program of its own");
             format!("Start it from the Start menu, where it is {}. {}", program.name, program.afterwards)
         }
-        Method::StatsLinux | Method::RustLinux => {
+        Method::StatsLinux | Method::RustLinux | Method::SongFindLinux => {
             let program = method.standalone().expect("a program of its own");
             format!(
                 "Start it from your applications menu, or run {}. {}",
@@ -2520,7 +2577,7 @@ pub fn how_to_start(method: Method, places: &Places, user_bin_on_path: bool) -> 
             )
         }
         // Quoted, since the name has a space in it and this is for pasting into a terminal.
-        Method::StatsMac | Method::RustMac => {
+        Method::StatsMac | Method::RustMac | Method::SongFindMac => {
             let program = method.standalone().expect("a program of its own");
             format!(
                 "Start it from Launchpad or Spotlight, or with open \"{}\". {}",

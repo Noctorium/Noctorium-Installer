@@ -200,6 +200,12 @@ pub enum Wanted {
     RustLinux,
     /// `noctorium-rust-<version>-macos-arm64.zip`, or `-macos-x64.zip`: `Noctorium Rust.app`.
     RustMac,
+    /// `noctorium-song-find-<version>-windows-x64.zip`, Noctorium Song Find: `Noctorium Song Find.exe`.
+    SongFindWindows,
+    /// `noctorium-song-find-<version>-linux-x64.tar.gz`: the program, its menu entry and its icon.
+    SongFindLinux,
+    /// `noctorium-song-find-<version>-macos-arm64.zip`, or `-macos-x64.zip`: `Noctorium Song Find.app`.
+    SongFindMac,
 }
 
 impl Wanted {
@@ -251,6 +257,19 @@ impl Wanted {
                 format!("-linux-{}.tar.gz", arch.windows()),
             ),
             Wanted::RustMac => ("noctorium-rust-", format!("-macos-{}.zip", arch.windows())),
+            // And Noctorium Song Find's the same way.
+            Wanted::SongFindWindows => (
+                "noctorium-song-find-",
+                format!("-windows-{}.zip", arch.windows()),
+            ),
+            Wanted::SongFindLinux => (
+                "noctorium-song-find-",
+                format!("-linux-{}.tar.gz", arch.windows()),
+            ),
+            Wanted::SongFindMac => (
+                "noctorium-song-find-",
+                format!("-macos-{}.zip", arch.windows()),
+            ),
         }
     }
 
@@ -475,6 +494,9 @@ mod tests {
         Wanted::RustWindows,
         Wanted::RustLinux,
         Wanted::RustMac,
+        Wanted::SongFindWindows,
+        Wanted::SongFindLinux,
+        Wanted::SongFindMac,
     ];
 
     fn picked(release: &Release, wanted: Wanted, arch: Arch) -> Option<&str> {
@@ -627,6 +649,7 @@ mod tests {
                 (Wanted::StatsWindows | Wanted::StatsLinux | Wanted::StatsMac, _) => None,
                 // And Noctorium Rust later still.
                 (Wanted::RustWindows | Wanted::RustLinux | Wanted::RustMac, _) => None,
+                (Wanted::SongFindWindows | Wanted::SongFindLinux | Wanted::SongFindMac, _) => None,
             }
         };
         for arch in [Arch::X86_64, Arch::Aarch64] {
@@ -717,6 +740,7 @@ mod tests {
                 (Wanted::StatsLinux, _) => Some("noctorium-stats-0.13.0-linux-x64.tar.gz"),
                 (Wanted::StatsMac, _) => Some("noctorium-stats-0.13.0-macos-x64.zip"),
                 (Wanted::RustWindows | Wanted::RustLinux | Wanted::RustMac, _) => None,
+                (Wanted::SongFindWindows | Wanted::SongFindLinux | Wanted::SongFindMac, _) => None,
             }
         };
         for arch in [Arch::X86_64, Arch::Aarch64] {

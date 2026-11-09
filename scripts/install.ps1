@@ -11,8 +11,8 @@
 # then says what it found and asks before it changes anything; --help lists what else it takes.
 #
 # It offers Noctorium, the Noctorium CLI, Noctorium Stats, which shows what you have listened to, and
-# Noctorium Rust, the player written in Rust: --product desktop, cli, stats, rust, both (Noctorium and the
-# CLI) or all, or several joined by commas, such as
+# Noctorium Rust, the player written in Rust, and Noctorium Song Find, which says which song is playing:
+# --product desktop, cli, stats, rust, song-find, both (Noctorium and the CLI) or all, or several joined by commas, such as
 # desktop,stats. NOCTORIUM_PRODUCT says the same, and is how iex is given it:
 #
 #   $env:NOCTORIUM_PRODUCT = 'stats'; irm https://noctorium.vercel.app/install | iex
@@ -91,15 +91,18 @@
         }
         if (-not $asked) { return $null }
 
-        $desktop = $false; $cli = $false; $stats = $false; $rust = $false
+        $desktop = $false; $cli = $false; $stats = $false; $rust = $false; $songFind = $false
         foreach ($one in @($asked.ToLowerInvariant() -split '[,+\s]+' | Where-Object { $_ })) {
             switch -CaseSensitive ($one) {
                 'desktop' { $desktop = $true }
                 'cli' { $cli = $true }
                 'stats' { $stats = $true }
                 'rust' { $rust = $true }
+                'song-find' { $songFind = $true }
+                'songfind' { $songFind = $true }
+                'song_find' { $songFind = $true }
                 'both' { $desktop = $true; $cli = $true }
-                'all' { $desktop = $true; $cli = $true; $stats = $true; $rust = $true }
+                'all' { $desktop = $true; $cli = $true; $stats = $true; $rust = $true; $songFind = $true }
                 default { return $null }
             }
         }
@@ -114,13 +117,19 @@
             $rust = $false
             $rustLeftOut = $true
         }
+        # And Noctorium Song Find, later again.
+        $songFindLeftOut = $false
+        if ($songFind -and $listing -notmatch '(?m)^\s*[0-9A-Fa-f]{64}\s+\*?noctorium-song-find-\d[^/\r\n]*-windows-x64\.zip\s*$') {
+            $songFind = $false
+            $songFindLeftOut = $true
+        }
         # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats, or
         # Noctorium Rust, is only still here when the release, and so its installer, has it. Without either,
         # the words every installer has always taken.
-        $product = if ($stats -or $rust) {
-            (@(if ($desktop) { 'desktop' }) + @(if ($cli) { 'cli' }) + @(if ($stats) { 'stats' }) + @(if ($rust) { 'rust' })) -join ','
+        $product = if ($stats -or $rust -or $songFind) {
+            (@(if ($desktop) { 'desktop' }) + @(if ($cli) { 'cli' }) + @(if ($stats) { 'stats' }) + @(if ($rust) { 'rust' }) + @(if ($songFind) { 'song-find' })) -join ','
         } elseif ($desktop -and $cli) { 'both' } elseif ($desktop) { 'desktop' } elseif ($cli) { 'cli' } else { '' }
-        [pscustomobject]@{ Product = $product; LeftOut = $leftOut; RustLeftOut = $rustLeftOut; Nothing = -not $product }
+        [pscustomobject]@{ Product = $product; LeftOut = $leftOut; RustLeftOut = $rustLeftOut; SongFindLeftOut = $songFindLeftOut; Nothing = -not $product }
     }
 
     # PowerShell 7 runs on Linux and macOS too, where the Windows installer is of no use. Both have their
@@ -184,6 +193,9 @@
             }
             if ($choice.RustLeftOut) {
                 Say 'Noctorium Rust is not in the latest release yet, so it is left out, and nothing is downloaded for it.' DarkGray
+            }
+            if ($choice.SongFindLeftOut) {
+                Say 'Noctorium Song Find is not in the latest release yet, so it is left out, and nothing is downloaded for it.' DarkGray
             }
             if ($choice.Nothing) {
                 Say 'Nothing else was asked for, so nothing has been installed.' DarkGray

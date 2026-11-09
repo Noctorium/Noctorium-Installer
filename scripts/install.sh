@@ -14,8 +14,8 @@
 # script's: 0 when it did what was asked, 1 when it did not, 2 when the options were not understood.
 #
 # It offers Noctorium, the Noctorium CLI, Noctorium Stats, which shows what you have listened to, and
-# Noctorium Rust, the player written in Rust: --product desktop, cli, stats, rust, both (Noctorium and the
-# CLI) or all, or several joined by commas, such as
+# Noctorium Rust, the player written in Rust, and Noctorium Song Find, which says which song is playing:
+# --product desktop, cli, stats, rust, song-find, both (Noctorium and the CLI) or all, or several joined by commas, such as
 # desktop,stats. NOCTORIUM_PRODUCT in the environment says the same, for when options are awkward:
 #
 #   curl -fsSL https://noctorium.vercel.app/install | NOCTORIUM_PRODUCT=stats sh
@@ -105,6 +105,9 @@ main() {
     if [ -n "$rust_left_out" ]; then
         say "Noctorium Rust is not in the latest release yet, so it is left out, and nothing is downloaded for it."
     fi
+    if [ -n "$song_find_left_out" ]; then
+        say "Noctorium Song Find is not in the latest release yet, so it is left out, and nothing is downloaded for it."
+    fi
     if [ -n "$nothing_left" ]; then
         say "Nothing else was asked for, so nothing has been installed."
         return 0
@@ -183,13 +186,14 @@ main() {
 #   product         the --product to run the installer with, or nothing to pass the options on unchanged
 #   stats_left_out  set when Noctorium Stats was asked for and the release has none for this machine
 #   rust_left_out   the same for Noctorium Rust, which came later still
+#   song_find_left_out  the same for Noctorium Song Find, later again
 #   nothing_left    set when that was all that was asked for, and there is nothing to run the installer for
 #
 # Unchanged when nothing was asked for, which is the installer's own question to ask; when what was asked
 # is not something this knows, which is the installer's to refuse, with its exit status of 2; and when the
 # options ask for help, a version or a listing, which install nothing.
 choose_products() {
-    product='' stats_left_out='' rust_left_out='' nothing_left=''
+    product='' stats_left_out='' rust_left_out='' song_find_left_out='' nothing_left=''
     for_system=$1 listing=$2
     shift 2
     asked=${NOCTORIUM_PRODUCT:-} next=''
@@ -210,7 +214,7 @@ choose_products() {
     fi
     case $asked in -*) return 0 ;; esac
 
-    desktop='' cli='' stats='' rust='' known=1
+    desktop='' cli='' stats='' rust='' song_find='' known=1
     words=$(printf '%s' "$asked" | tr 'A-Z,+' 'a-z  ')
     # Split on spaces and nothing else: a * in what somebody typed is not a list of files.
     set -f
@@ -220,8 +224,9 @@ choose_products() {
             cli) cli=1 ;;
             stats) stats=1 ;;
             rust) rust=1 ;;
+            song-find | songfind | song_find) song_find=1 ;;
             both) desktop=1 cli=1 ;;
-            all) desktop=1 cli=1 stats=1 rust=1 ;;
+            all) desktop=1 cli=1 stats=1 rust=1 song_find=1 ;;
             *) known='' ;;
         esac
     done
@@ -235,11 +240,14 @@ choose_products() {
     if [ -n "$rust" ] && ! has_file noctorium-rust "$for_system" "$listing"; then
         rust='' rust_left_out=1
     fi
+    if [ -n "$song_find" ] && ! has_file noctorium-song-find "$for_system" "$listing"; then
+        song_find='' song_find_left_out=1
+    fi
     # Joined with commas, which only an installer that knows Noctorium Stats reads -- and Stats, or
     # Noctorium Rust, is only still here when the release, and so its installer, has it. Without either,
     # the words every installer has always taken.
-    if [ -n "$stats" ] || [ -n "$rust" ]; then
-        product=${desktop:+desktop,}${cli:+cli,}${stats:+stats,}${rust:+rust,}
+    if [ -n "$stats" ] || [ -n "$rust" ] || [ -n "$song_find" ]; then
+        product=${desktop:+desktop,}${cli:+cli,}${stats:+stats,}${rust:+rust,}${song_find:+song-find,}
         product=${product%,}
     elif [ -n "$desktop" ] && [ -n "$cli" ]; then
         product=both
@@ -258,7 +266,8 @@ has_stats() {
     has_file noctorium-stats "$1" "$2"
 }
 
-# Whether the checksums ($3) list the archive named $1 -- noctorium-stats, noctorium-rust -- for this system
+# Whether the checksums ($3) list the archive named $1 -- noctorium-stats, noctorium-rust, noctorium-song-find --
+# for this system
 # ($2), as Noctorium Stats' and Noctorium Rust's are named alike.
 has_file() {
     case $2 in

@@ -1,7 +1,8 @@
 name: Packaging
 
-# Every Linux format, everything for the Mac, every PC installer, all of Noctorium Stats and all of
-# Noctorium Rust, built as a release would build them, and attached to the run rather than to a release. This is how the packaging is
+# Every Linux format, everything for the Mac, every PC installer, and all of Noctorium Stats, Noctorium Rust
+# and Noctorium Song Find, built as a release would build them, and attached to the run rather than to a
+# release. This is how the packaging is
 # tried: push a branch named packaging/something, or run it by hand from the Actions tab against any branch
 # or commit of the desktop.
 #
@@ -32,6 +33,14 @@ on:
         default: 'main'
       rust_ref:
         description: 'Noctorium-Desktop-Rust branch, tag or commit to build'
+        required: false
+        default: 'main'
+      song_find_desktop_ref:
+        description: 'Noctorium-song-find-desktop-rust branch, tag or commit to build'
+        required: false
+        default: 'main'
+      song_find_mobile_ref:
+        description: 'Noctorium-song-find-mobile-dart branch, tag or commit to build'
         required: false
         default: 'main'
       version:
@@ -110,3 +119,14 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
       ref: ${{ inputs.rust_ref || 'main' }}
+
+  song-find:
+    name: Noctorium Song Find
+    needs: version
+    uses: ./.github/workflows/song-find.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      desktop_ref: ${{ inputs.song_find_desktop_ref || 'main' }}
+      mobile_ref: ${{ inputs.song_find_mobile_ref || 'main' }}
+    # For the APK's signing key. Without it the APK is signed with the debug key, and says so.
+    secrets: inherit

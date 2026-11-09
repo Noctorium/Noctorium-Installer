@@ -41,7 +41,7 @@ noctorium-installer-cli, which is this installer for a terminal.
   already. The window has a box to tick for the setup's own wizard instead, to choose the folder.
 
   GITHUB_TOKEN           raises GitHub's rate limit, and reads a repository that is not public
-  NOCTORIUM_PRODUCT      with --cli, what --product would say: desktop, cli, stats, rust, both or all
+  NOCTORIUM_PRODUCT      with --cli, what --product would say: desktop, cli, stats, rust, song-find, both or all
   NOCTORIUM_REPOSITORY   the repository to install from, as owner/name
   NOCTORIUM_NO_PATH      unpack the Noctorium CLI, and leave your PATH, and Windows' list of installed
                          apps, as they are

@@ -97,6 +97,13 @@ void main() {
     expect(named(['Noctorium-Stats-1.0.0.apk.sha256']).statsApk, isNull);
     expect(named(['noctorium-stats-1.0.0-macos-arm64.zip']).statsApk, isNull);
     expect(named(['noctorium-stats-1.0.0.apk']).statsApk?.name, 'noctorium-stats-1.0.0.apk');
+    // Noctorium Song Find, from 0.27.0, answers only for its own.
+    final three = named(['Noctorium-0.27.0.apk', 'Noctorium-Stats-0.27.0.apk', 'Noctorium-Song-Find-0.27.0.apk']);
+    expect(three.apk?.name, 'Noctorium-0.27.0.apk');
+    expect(three.statsApk?.name, 'Noctorium-Stats-0.27.0.apk');
+    expect(three.songFindApk?.name, 'Noctorium-Song-Find-0.27.0.apk');
+    expect(named(['Noctorium-Song-Find-0.27.0.apk']).apk, isNull, reason: 'Song Find is never Noctorium');
+    expect(named(['noctorium-song-find-0.27.0-windows-x64.zip']).songFindApk, isNull);
   });
 
   test('a release published for the desktop only says so rather than installing an exe', () {

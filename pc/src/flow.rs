@@ -29,6 +29,9 @@ pub enum Product {
     /// Noctorium Rust: Noctorium for the desktop, written in Rust -- the same player as one native program,
     /// installed as Noctorium Stats is.
     Rust,
+    /// Noctorium Song Find: which song is playing, from the microphone or the computer's own sound --
+    /// installed as Noctorium Stats is.
+    SongFind,
 }
 
 impl Product {
@@ -38,25 +41,28 @@ impl Product {
             Product::Cli => "Noctorium CLI",
             Product::Stats => "Noctorium Stats",
             Product::Rust => "Noctorium Rust",
+            Product::SongFind => "Noctorium Song Find",
         }
     }
 
     /// All of them, in the order they are offered, planned and listed.
-    pub const ALL: [Product; 4] = [
+    pub const ALL: [Product; 5] = [
         Product::Desktop,
         Product::Cli,
         Product::Stats,
         Product::Rust,
+        Product::SongFind,
     ];
 }
 
-/// Which of them were asked for: any of the four, in any combination but none.
+/// Which of them were asked for: any of the five, in any combination but none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Products {
     pub desktop: bool,
     pub cli: bool,
     pub stats: bool,
     pub rust: bool,
+    pub song_find: bool,
 }
 
 impl Default for Products {
@@ -71,18 +77,21 @@ impl Products {
         cli: false,
         stats: false,
         rust: false,
+        song_find: false,
     };
     pub const CLI: Products = Products {
         desktop: false,
         cli: true,
         stats: false,
         rust: false,
+        song_find: false,
     };
     pub const STATS: Products = Products {
         desktop: false,
         cli: false,
         stats: true,
         rust: false,
+        song_find: false,
     };
     /// Noctorium and the Noctorium CLI, which is what `both` meant before there were three, and still
     /// means: a script written then installs now what it installed then.
@@ -91,18 +100,28 @@ impl Products {
         cli: true,
         stats: false,
         rust: false,
+        song_find: false,
     };
     pub const RUST: Products = Products {
         desktop: false,
         cli: false,
         stats: false,
         rust: true,
+        song_find: false,
+    };
+    pub const SONG_FIND: Products = Products {
+        desktop: false,
+        cli: false,
+        stats: false,
+        rust: false,
+        song_find: true,
     };
     pub const ALL: Products = Products {
         desktop: true,
         cli: true,
         stats: true,
         rust: true,
+        song_find: true,
     };
 
     pub fn each(self) -> Vec<Product> {
@@ -112,7 +131,8 @@ impl Products {
             .collect()
     }
 
-    /// What `--product` takes: `desktop`, `cli`, `stats`, `rust`, `both` (Noctorium and the CLI) or `all`,
+    /// What `--product` takes: `desktop`, `cli`, `stats`, `rust`, `song-find`, `both` (Noctorium and the CLI)
+    /// or `all`,
     /// or several of them joined by commas or plus signs -- `desktop,stats`. Nothing for a word it does not
     /// know, or for nothing at all.
     pub fn parse(words: &str) -> Option<Products> {
@@ -123,6 +143,7 @@ impl Products {
                 "cli" => Products::CLI,
                 "stats" => Products::STATS,
                 "rust" => Products::RUST,
+                "song-find" | "songfind" | "song_find" => Products::SONG_FIND,
                 "both" => Products::BOTH,
                 "all" => Products::ALL,
                 _ => return None,
@@ -133,12 +154,19 @@ impl Products {
     }
 
     /// From a yes or no for each, which is how the window asks; nothing when all are no.
-    pub fn from_choice(desktop: bool, cli: bool, stats: bool, rust: bool) -> Option<Products> {
+    pub fn from_choice(
+        desktop: bool,
+        cli: bool,
+        stats: bool,
+        rust: bool,
+        song_find: bool,
+    ) -> Option<Products> {
         let products = Products {
             desktop,
             cli,
             stats,
             rust,
+            song_find,
         };
         (!products.is_empty()).then_some(products)
     }
@@ -149,6 +177,7 @@ impl Products {
             Product::Cli => self.cli,
             Product::Stats => self.stats,
             Product::Rust => self.rust,
+            Product::SongFind => self.song_find,
         }
     }
 
@@ -159,11 +188,12 @@ impl Products {
             cli: self.cli || other.cli,
             stats: self.stats || other.stats,
             rust: self.rust || other.rust,
+            song_find: self.song_find || other.song_find,
         }
     }
 
     pub fn is_empty(self) -> bool {
-        !self.desktop && !self.cli && !self.stats && !self.rust
+        !self.desktop && !self.cli && !self.stats && !self.rust && !self.song_find
     }
 
     pub fn count(self) -> usize {
@@ -176,6 +206,7 @@ impl Products {
             cli: false,
             stats: false,
             rust: false,
+            song_find: false,
         }
     }
 }
@@ -226,7 +257,10 @@ impl Format {
             | Method::StatsMac
             | Method::RustWindows
             | Method::RustLinux
-            | Method::RustMac => Format::Auto,
+            | Method::RustMac
+            | Method::SongFindWindows
+            | Method::SongFindLinux
+            | Method::SongFindMac => Format::Auto,
         }
     }
 }
@@ -411,6 +445,11 @@ pub fn rust_asset(found: &Found) -> Option<&Asset> {
     standalone_asset(&install::RUST, found)
 }
 
+/// Noctorium Song Find's file in this release for this machine, if it carries one.
+pub fn song_find_asset(found: &Found) -> Option<&Asset> {
+    standalone_asset(&install::SONG_FIND, found)
+}
+
 fn standalone_asset<'a>(program: &install::Standalone, found: &'a Found) -> Option<&'a Asset> {
     let arch = found.system.arch?;
     found.release.asset_for(
@@ -563,6 +602,14 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
                     continue;
                 }
             },
+            // As Stats and Rust: every release before 0.27.0 has none.
+            Product::SongFind => match standalone_method(&install::SONG_FIND, found, arch) {
+                Some(chosen) => chosen,
+                None => {
+                    notes.push(left_out(&install::SONG_FIND, found, "0.27.0"));
+                    continue;
+                }
+            },
         };
         let published = github::published_checksum(listing, &asset.name).ok_or_else(|| {
             Problem::Missing(format!(
@@ -595,6 +642,7 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
                     | Method::MacDiskImage
                     | Method::StatsMac
                     | Method::RustMac
+                    | Method::SongFindMac
             )
         {
             if let Some(user) = &system.sudo_user {
@@ -626,7 +674,7 @@ pub fn plan(found: &Found, options: Options) -> Result<Plan, Problem> {
 
         if matches!(
             method,
-            Method::MacDiskImage | Method::StatsMac | Method::RustMac
+            Method::MacDiskImage | Method::StatsMac | Method::RustMac | Method::SongFindMac
         ) {
             if let Some(folder) = &found.places.applications {
                 if folder != Path::new("/Applications") {
@@ -1838,28 +1886,31 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
     }
 
     #[test]
-    fn the_windows_choice_is_any_of_the_four_but_none() {
+    fn the_windows_choice_is_any_of_the_five_but_none() {
         assert_eq!(
-            Products::from_choice(true, false, false, false),
+            Products::from_choice(true, false, false, false, false),
             Some(Products::DESKTOP)
         );
         assert_eq!(
-            Products::from_choice(false, true, false, false),
+            Products::from_choice(false, true, false, false, false),
             Some(Products::CLI)
         );
         assert_eq!(
-            Products::from_choice(true, true, false, false),
+            Products::from_choice(true, true, false, false, false),
             Some(Products::BOTH)
         );
         assert_eq!(
-            Products::from_choice(false, false, true, false),
+            Products::from_choice(false, false, true, false, false),
             Some(Products::STATS)
         );
         assert_eq!(
-            Products::from_choice(true, true, true, true),
+            Products::from_choice(true, true, true, true, true),
             Some(Products::ALL)
         );
-        assert_eq!(Products::from_choice(false, false, false, false), None);
+        assert_eq!(
+            Products::from_choice(false, false, false, false, false),
+            None
+        );
         assert!(Products::BOTH.includes(Product::Cli));
         assert!(!Products::BOTH.includes(Product::Stats));
         assert!(!Products::DESKTOP.includes(Product::Cli));
@@ -1869,7 +1920,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
                 Product::Desktop,
                 Product::Cli,
                 Product::Stats,
-                Product::Rust
+                Product::Rust,
+                Product::SongFind
             ],
             "always in the same order, whatever order they were asked for in"
         );
@@ -1889,6 +1941,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
                 cli: false,
                 stats: true,
                 rust: false,
+                song_find: false,
             })
         );
         assert_eq!(
@@ -1898,9 +1951,14 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
                 cli: true,
                 stats: true,
                 rust: false,
+                song_find: false,
             })
         );
-        assert_eq!(Products::parse("both,stats,rust"), Some(Products::ALL));
+        assert_eq!(
+            Products::parse("both,stats,rust,song-find"),
+            Some(Products::ALL)
+        );
+        assert_eq!(Products::parse("song-find"), Some(Products::SONG_FIND));
         assert_eq!(Products::parse("rust"), Some(Products::RUST));
         assert_eq!(
             Products::parse("Rust+desktop"),
@@ -1909,10 +1967,11 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  noctorium-cli-
                 cli: false,
                 stats: false,
                 rust: true,
+                song_find: false,
             })
         );
         assert_eq!(
-            Products::from_choice(false, false, false, true),
+            Products::from_choice(false, false, false, true, false),
             Some(Products::RUST)
         );
         assert_eq!(
@@ -1969,6 +2028,70 @@ eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee  Noctorium-Stat
             products,
             ..Options::default()
         }
+    }
+
+    // ------------------------------------------------------------ Noctorium Song Find
+
+    const SONG_FIND_SUMS: &str = "\
+5555555555555555555555555555555555555555555555555555555555555555  noctorium-song-find-0.27.0-windows-x64.zip
+6666666666666666666666666666666666666666666666666666666666666666  noctorium-song-find-0.27.0-linux-x64.tar.gz
+7777777777777777777777777777777777777777777777777777777777777777  noctorium-song-find-0.27.0-macos-arm64.zip
+8888888888888888888888888888888888888888888888888888888888888888  noctorium-song-find-0.27.0-macos-x64.zip
+";
+
+    /// A release with Noctorium Song Find beside Stats, as 0.27.0 is.
+    fn with_song_find(found: Found) -> Found {
+        let mut names: Vec<&str> = WITH_STATS.to_vec();
+        names.extend([
+            "noctorium-song-find-0.27.0-windows-x64.zip",
+            "noctorium-song-find-0.27.0-linux-x64.tar.gz",
+            "noctorium-song-find-0.27.0-macos-arm64.zip",
+            "noctorium-song-find-0.27.0-macos-x64.zip",
+        ]);
+        Found {
+            release: release(&names),
+            checksums: Some(format!("{SUMS}{STATS_SUMS}{SONG_FIND_SUMS}")),
+            ..found
+        }
+    }
+
+    #[test]
+    fn windows_unpacks_noctorium_song_find_into_its_own_folder_with_a_shortcut() {
+        let mut found = with_song_find(found(windows(), ON_WINDOWS));
+        found.places.start_menu =
+            Some(r"C:\Users\Sam\AppData\Roaming\Microsoft\Windows\Start Menu\Programs".into());
+        let plan = plan(&found, only(Products::SONG_FIND)).expect("should plan");
+        assert_eq!(plan.items.len(), 1);
+        let item = &plan.items[0];
+        assert_eq!(item.product, Product::SongFind);
+        assert_eq!(item.method, Method::SongFindWindows);
+        assert_eq!(
+            item.asset.name,
+            "noctorium-song-find-0.27.0-windows-x64.zip"
+        );
+        assert_eq!(item.published, "5".repeat(64));
+        let folder =
+            PathBuf::from(r"C:\Users\Sam\AppData\Local\Programs").join("Noctorium Song Find");
+        assert!(matches!(
+            &item.actions[0],
+            Action::UnpackStats { program, into, .. }
+                if std::ptr::eq(*program, &install::SONG_FIND) && *into == folder
+        ));
+        assert!(item.start.contains("Noctorium Song Find"), "{}", item.start);
+    }
+
+    #[test]
+    fn a_release_without_song_find_leaves_it_out_with_a_word() {
+        let found = with_stats(found(windows(), ON_WINDOWS));
+        let plan = plan(&found, only(Products::DESKTOP.with(Products::SONG_FIND)))
+            .expect("should plan the rest");
+        assert!(!plan.items.iter().any(|i| i.product == Product::SongFind));
+        assert!(plan.items.iter().any(|i| i.product == Product::Desktop));
+        assert!(
+            plan.notes.iter().any(|n| n.contains("Noctorium Song Find")),
+            "{:?}",
+            plan.notes
+        );
     }
 
     // ------------------------------------------------------------ Noctorium Rust

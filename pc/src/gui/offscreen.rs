@@ -395,6 +395,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: true,
                         stats: false,
                         rust: false,
+                        song_find: false,
                         wizard: true,
                     },
                 )
@@ -410,6 +411,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: true,
                         stats: false,
                         rust: false,
+                        song_find: false,
                         wizard: false,
                     },
                 )
@@ -425,6 +427,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: false,
                         stats: false,
                         rust: false,
+                        song_find: false,
                         wizard: false,
                     },
                 )
@@ -440,6 +443,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: true,
                         stats: false,
                         rust: false,
+                        song_find: false,
                         wizard: false,
                     },
                 )
@@ -455,6 +459,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: true,
                         stats: true,
                         rust: true,
+                        song_find: true,
                         wizard: false,
                     },
                 )
@@ -470,6 +475,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: false,
                         stats: true,
                         rust: true,
+                        song_find: true,
                         wizard: false,
                     },
                 )
@@ -485,6 +491,7 @@ fn stages() -> Vec<(&'static str, MakeStage)> {
                         cli: false,
                         stats: true,
                         rust: true,
+                        song_find: true,
                         wizard: false,
                     },
                 )
@@ -650,23 +657,25 @@ fn every_stage_lays_out() {
     }
 }
 
-/// The choice, as somebody who cannot see it is told of it: four boxes, each saying what it is and how
-/// big -- or, for Noctorium Rust against a release from before it, that it is not in it -- Noctorium ticked
-/// to begin with, and on Windows a fifth, for the folder, not ticked.
+/// The choice, as somebody who cannot see it is told of it: five boxes, each saying what it is and how
+/// big -- or, for Noctorium Rust and Noctorium Song Find against a release from before them, that they are
+/// not in it -- Noctorium ticked to begin with, and on Windows a sixth, for the folder, not ticked.
 #[test]
 fn the_choice_of_products_is_told_to_a_screen_reader_whole() {
     let picture = draw("ready", &|| choosing(Os::Windows, Wanted::default()), false);
     let boxes = picture.checkboxes();
-    assert_eq!(boxes.len(), 5, "{boxes:?}");
-    assert!(
-        boxes.iter().any(
-            |(label, ticked, enabled)| label.starts_with("Noctorium Rust")
-                && label.contains("not in")
-                && !ticked
-                && !enabled
-        ),
-        "{boxes:?}"
-    );
+    assert_eq!(boxes.len(), 6, "{boxes:?}");
+    for later in ["Noctorium Rust", "Noctorium Song Find"] {
+        assert!(
+            boxes
+                .iter()
+                .any(|(label, ticked, enabled)| label.starts_with(later)
+                    && label.contains("not in")
+                    && !ticked
+                    && !enabled),
+            "{boxes:?}"
+        );
+    }
     // Found by what they say, since the tree is not handed over in the order it is drawn.
     let find = |test: &dyn Fn(&str) -> bool| {
         boxes
@@ -680,6 +689,7 @@ fn the_choice_of_products_is_told_to_a_screen_reader_whole() {
             && !label.starts_with("Noctorium CLI")
             && !label.starts_with("Noctorium Stats")
             && !label.starts_with("Noctorium Rust")
+            && !label.starts_with("Noctorium Song Find")
     });
     assert!(
         desktop.contains("the music player") && desktop.contains("327 MB"),
@@ -708,6 +718,7 @@ fn both_chosen_says_both_and_their_size_together() {
         cli: true,
         stats: false,
         rust: false,
+        song_find: false,
         wizard: false,
     };
     let picture = draw("both", &|| choosing(Os::Windows, both), false);
@@ -719,6 +730,7 @@ fn both_chosen_says_both_and_their_size_together() {
         cli: false,
         stats: false,
         rust: false,
+        song_find: false,
         wizard: false,
     };
     let picture = draw("none", &|| choosing(Os::Windows, none), false);
@@ -726,13 +738,14 @@ fn both_chosen_says_both_and_their_size_together() {
         picture.says("Choose Noctorium, the Noctorium CLI or Noctorium Stats -- or more than one.")
     );
     // Nothing to choose the folder of.
-    assert_eq!(picture.checkboxes().len(), 4);
+    assert_eq!(picture.checkboxes().len(), 5);
 
     let all = Wanted {
         desktop: true,
         cli: true,
         stats: true,
         rust: true,
+        song_find: true,
         wizard: false,
     };
     let picture = draw("all", &|| choosing(Os::Windows, all), false);
@@ -781,6 +794,7 @@ fn a_release_without_stats_says_so_and_installs_the_rest() {
         cli: false,
         stats: true,
         rust: true,
+        song_find: true,
         wizard: false,
     };
     let picture = draw(
