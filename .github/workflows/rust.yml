@@ -70,7 +70,13 @@ jobs:
       # D-Bus; those headers are not on the runner. desktop-file-utils is for checking the menu entry below.
       - name: Libraries the window is built against
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libdbus-1-dev pkg-config desktop-file-utils
+        run: |
+          # Ubuntu's package servers sometimes fail to resolve on GitHub's runners for a while: try again rather than fail the build.
+          for try in 1 2 3 4 5 6; do
+            sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libdbus-1-dev pkg-config desktop-file-utils && break
+            if [ "$try" = 6 ]; then exit 1; fi
+            echo "apt failed, trying again in a minute ($try of 6)"; sleep 60
+          done
 
       - name: Tests
         run: cargo test --locked

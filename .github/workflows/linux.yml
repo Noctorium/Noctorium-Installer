@@ -50,7 +50,13 @@ jobs:
         # xdg-utils and desktop-file-utils are for the package's own post-install hook, not for building:
         # jpackage writes one that registers the .desktop entry, and on a runner without them dpkg fails
         # the install with exit status 3 while the package itself is perfectly good.
-        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm cpio xdg-utils desktop-file-utils shared-mime-info
+        run: |
+          # Ubuntu's package servers sometimes fail to resolve on GitHub's runners for a while: try again rather than fail the build.
+          for try in 1 2 3 4 5 6; do
+            sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y fakeroot binutils rpm cpio xdg-utils desktop-file-utils shared-mime-info && break
+            if [ "$try" = 6 ]; then exit 1; fi
+            echo "apt failed, trying again in a minute ($try of 6)"; sleep 60
+          done
 
       # createDistributable is the application folder on its own, which the packages are built from but
       # do not leave behind: it is what the Arch package, the AppImage and the Flatpak are made of.
@@ -243,7 +249,12 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$RUNNER_TEMP/appimagetool"
-          sudo apt-get update && sudo apt-get install -y desktop-file-utils
+          # Ubuntu's package servers sometimes fail to resolve on GitHub's runners for a while: try again rather than fail the build.
+          for try in 1 2 3 4 5 6; do
+            sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y desktop-file-utils && break
+            if [ "$try" = 6 ]; then exit 1; fi
+            echo "apt failed, trying again in a minute ($try of 6)"; sleep 60
+          done
 
       - name: Build the AppImage
         env:
@@ -304,8 +315,12 @@ jobs:
       - name: Install Flatpak and flatpak-builder
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder dbus-x11
+          # Ubuntu's package servers sometimes fail to resolve on GitHub's runners for a while: try again rather than fail the build.
+          for try in 1 2 3 4 5 6; do
+            sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y flatpak flatpak-builder dbus-x11 && break
+            if [ "$try" = 6 ]; then exit 1; fi
+            echo "apt failed, trying again in a minute ($try of 6)"; sleep 60
+          done
           # Ubuntu stops unprivileged programs making user namespaces unless AppArmor has a profile for
           # them, and bubblewrap -- which both building and running a Flatpak go through -- needs one.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

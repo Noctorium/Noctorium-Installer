@@ -38,7 +38,13 @@ jobs:
       # Windows has its own in the SDK, so this is the Linux leg only.
       - name: Libraries the window is built against
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+        run: |
+          # Ubuntu's package servers sometimes fail to resolve on GitHub's runners for a while: try again rather than fail the build.
+          for try in 1 2 3 4 5 6; do
+            sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev && break
+            if [ "$try" = 6 ]; then exit 1; fi
+            echo "apt failed, trying again in a minute ($try of 6)"; sleep 60
+          done
       - name: Formatting
         run: cargo fmt --check
       - name: Lints
