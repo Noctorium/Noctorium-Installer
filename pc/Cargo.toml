@@ -1,6 +1,6 @@
 [package]
 name = "noctorium-installer"
-version = "0.28.0"
+version = "0.29.0"
 edition = "2021"
 # zip's floor; eframe's is 1.85. The oldest toolchain this builds on.
 rust-version = "1.88"
