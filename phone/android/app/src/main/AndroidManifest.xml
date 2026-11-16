@@ -11,7 +11,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
-      A TV can run this too, to install Noctorium -- which is Noctorium for Android TV as well -- so neither a
+      A TV can run this too, to install Noctorium, which is Noctorium for Android TV as well, so neither a
       touchscreen nor the TV interface is required, and a TV's home screen lists it by the banner below.
     -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
