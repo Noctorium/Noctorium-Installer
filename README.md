@@ -19,6 +19,12 @@ microphone, or from what the computer or phone itself is playing — from
 Linux and both kinds of Mac, and [Noctorium-song-find-mobile-dart](https://github.com/Noctorium/Noctorium-song-find-mobile-dart)
 for Android. Every installer offers it, and it updates itself as the rest do.
 
+From 0.31.0 the Android APK is Noctorium for **Android Auto** and **Android TV** too, from
+[Noctorium-Android-Auto](https://github.com/Noctorium/Noctorium-Android-Auto) and
+[Noctorium-Android-TV](https://github.com/Noctorium/Noctorium-Android-TV), which Noctorium-Mobile builds in: the car
+shows Noctorium's own menu, and a TV lists it on its home screen with pages made for the remote. The Android installer
+opens on a TV as well.
+
 On Android, every app here also works with [Obtainium](https://github.com/ImranR98/Obtainium): add this
 repository as the source and set *Filter APKs by regular expression* to `^Noctorium-[0-9].*[.]apk$`,
 `^Noctorium-Stats-[0-9].*[.]apk$` or `^Noctorium-Song-Find-[0-9].*[.]apk$`. The
@@ -107,7 +113,7 @@ one with Stats in it.
 | `Noctorium-Installer-x86_64.AppImage`, or the bare `noctorium-installer-linux-x64` | Linux, in a window | `pc/` |
 | `noctorium-installer-cli-windows-x64.exe`, `noctorium-installer-cli-linux-x64` | A terminal, on either | `pc/` |
 | `noctorium-installer-cli-macos` | A terminal on a Mac, Apple silicon or Intel: one universal file | `pc/` |
-| `Noctorium-Installer-android.apk` | Android: Noctorium, or Noctorium Stats | `phone/`, in Dart with Flutter |
+| `Noctorium-Installer-android.apk` | Android phones and TVs: Noctorium, or Noctorium Stats | `phone/`, in Dart with Flutter |
 
 None of them installs a package itself. The PC ones hand Windows its `.msi`, or the package to the
 distribution's own package manager — `apt`, `dnf`, `zypper` or `pacman` — so dependencies are resolved
@@ -172,10 +178,10 @@ default, and `--yes` takes them all, so the same program serves somebody at a pr
 installing Noctorium on a row of machines.
 
 ```
-  ♫ Noctorium  installer 0.30.0
+  ♫ Noctorium  installer 0.31.0
 
   System    Ubuntu 24.04.1 LTS · x86-64 · apt, flatpak
-  Release   v0.30.0 (the latest)
+  Release   v0.31.0 (the latest)
 
   What would you like to install?
     1  Noctorium        the music player, in a window, 242.7 MB  recommended
@@ -328,7 +334,7 @@ sudo apt-get install musl-tools && rustup target add x86_64-unknown-linux-musl
 | Arch, Manjaro, EndeavourOS | `noctorium-<version>-1-x86_64.pkg.tar.zst` |
 | Any Linux | `Noctorium-<version>-x86_64.AppImage` |
 | Any Linux with Flatpak | `Noctorium-<version>-x86_64.flatpak` |
-| Android | `Noctorium-<version>.apk` |
+| Android, with Android Auto and Android TV | `Noctorium-<version>.apk`, the one APK for phones, cars and TVs from 0.31.0 on |
 | The Noctorium CLI | `noctorium-cli-<version>-windows-x64.zip`, `noctorium-cli-<version>-linux-x64.tar.gz`, `noctorium-cli-<version>-macos-arm64.tar.gz`, `noctorium-cli-<version>-macos-x64.tar.gz`, in the releases that carry it |
 | Noctorium Stats | `noctorium-stats-<version>-windows-x64.zip` (`Noctorium Stats.exe`), `noctorium-stats-<version>-linux-x64.tar.gz` (`noctorium-stats`, its `.desktop` file and its icon), `noctorium-stats-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Stats.app`), and `Noctorium-Stats-<version>.apk`, from 0.13.0 on |
 | Noctorium Rust | `noctorium-rust-<version>-windows-x64.zip` (`Noctorium Rust.exe`), `noctorium-rust-<version>-linux-x64.tar.gz` (`noctorium-rust`, its `.desktop` file and its icon), `noctorium-rust-<version>-macos-arm64.zip` and `-macos-x64.zip` (`Noctorium Rust.app`), from 0.21.0 on |

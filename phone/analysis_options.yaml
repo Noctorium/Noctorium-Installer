@@ -5,3 +5,6 @@ analyzer:
     # A warning that CI ignores is a warning nobody reads.
     unused_import: error
     unused_local_variable: error
+  exclude:
+    - build/**
+    - android/**

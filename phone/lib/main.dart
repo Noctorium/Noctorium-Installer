@@ -90,8 +90,9 @@ class InstallerScreen extends StatefulWidget {
 
 class _InstallerScreenState extends State<InstallerScreen> {
   Stage _stage = Stage.idle;
-  String _message = 'Install the latest Noctorium on this phone, or Noctorium Stats, which shows what '
-      'you have listened to, or Noctorium Song Find, which says which song is playing.';
+  String _message = 'Install the latest Noctorium on this phone or TV -- it is Noctorium for Android Auto and '
+      'Android TV too -- or Noctorium Stats, which shows what you have listened to, or Noctorium Song Find, which '
+      'says which song is playing.';
   double? _progress;
   String? _version;
 

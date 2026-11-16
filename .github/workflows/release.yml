@@ -31,7 +31,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.30.0'
+        default: '0.31.0'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
@@ -440,7 +440,7 @@ jobs:
           draft: true
           generate_release_notes: false
           body: |
-            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}`, Noctorium-cli at `${{ env.CLI_REF }}`, Noctorium-Stats-Desktop at `${{ env.STATS_DESKTOP_REF }}`, Noctorium-Stats-Mobile at `${{ env.STATS_MOBILE_REF }}`, Noctorium-Desktop-Rust at `${{ env.RUST_REF }}`, Noctorium-song-find-desktop-rust at `${{ env.SONG_FIND_DESKTOP_REF }}`, Noctorium-song-find-mobile-dart at `${{ env.SONG_FIND_MOBILE_REF }}`.
+            Built from `${{ github.ref_name }}`: Noctorium-Desktop at `${{ env.DESKTOP_REF }}`, Noctorium-Mobile at `${{ env.MOBILE_REF }}` (with Noctorium-Android-Auto and Noctorium-Android-TV, its auto/ and tv/ submodules), Noctorium-cli at `${{ env.CLI_REF }}`, Noctorium-Stats-Desktop at `${{ env.STATS_DESKTOP_REF }}`, Noctorium-Stats-Mobile at `${{ env.STATS_MOBILE_REF }}`, Noctorium-Desktop-Rust at `${{ env.RUST_REF }}`, Noctorium-song-find-desktop-rust at `${{ env.SONG_FIND_DESKTOP_REF }}`, Noctorium-song-find-mobile-dart at `${{ env.SONG_FIND_MOBILE_REF }}`.
 
             | Platform | File |
             | --- | --- |
@@ -452,7 +452,7 @@ jobs:
             | Any Linux with Flatpak | `Noctorium-*-x86_64.flatpak`: `flatpak install --user --bundle` |
             | macOS, Apple silicon | `Noctorium-*-macos-arm64.dmg`: open it and drag Noctorium into Applications |
             | macOS, Intel | `Noctorium-*-macos-x64.dmg` |
-            | Android | `Noctorium-*.apk` -- not `Noctorium-Stats-*.apk` or `Noctorium-Song-Find-*.apk`, which are Noctorium Stats and Noctorium Song Find |
+            | Android, Android Auto and Android TV | `Noctorium-*.apk`, one APK for the phone, the car and the TV -- not `Noctorium-Stats-*.apk` or `Noctorium-Song-Find-*.apk`, which are Noctorium Stats and Noctorium Song Find |
             | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, `noctorium-cli-*-macos-arm64.tar.gz`, `noctorium-cli-*-macos-x64.tar.gz` |
             | Noctorium Stats: your listening, in figures, from your Noctorium account | `noctorium-stats-*-windows-x64.zip`, `noctorium-stats-*-linux-x64.tar.gz`, `noctorium-stats-*-macos-arm64.zip`, `noctorium-stats-*-macos-x64.zip`, and for Android `Noctorium-Stats-*.apk` |
             | Noctorium Rust: the same player written in Rust, one native program | `noctorium-rust-*-windows-x64.zip`, `noctorium-rust-*-linux-x64.tar.gz`, `noctorium-rust-*-macos-arm64.zip`, `noctorium-rust-*-macos-x64.zip` |
@@ -466,7 +466,7 @@ jobs:
             | Windows | `Noctorium-Installer-windows-x64.exe` | `noctorium-installer-cli-windows-x64.exe` |
             | Linux | `Noctorium-Installer-x86_64.AppImage`, or `noctorium-installer-linux-x64` | `noctorium-installer-cli-linux-x64` |
             | macOS | the disk image is the installer | `noctorium-installer-cli-macos`, for Apple silicon and Intel |
-            | Android | `Noctorium-Installer-android.apk` | |
+            | Android, phones and TVs | `Noctorium-Installer-android.apk` | |
 
             The installers offer Noctorium, the Noctorium CLI, Noctorium Stats, Noctorium Rust and Noctorium Song Find, any or all of them. The
             terminal installer asks which and which format, or takes `--product`, `--yes` and the
