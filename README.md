@@ -475,6 +475,20 @@ a secret, and each checkout given `ssh-key:` and an explicit second checkout of 
 `git rev-parse HEAD:base`. Deploy keys also have to be enabled for the organisation, which they are not by
 default.
 
+### A release for every new yt-dlp
+
+yt-dlp is what Noctorium on the computer reads YouTube, YouTube Music and SoundCloud with, and they change their pages
+often enough that an old yt-dlp stops playing things. So a new yt-dlp makes a new Noctorium by itself:
+[`.github/workflows/yt-dlp.yml`](.github/workflows/yt-dlp.yml) asks yt-dlp's releases once a day for the newest, and when
+it is newer than [`packaging/yt-dlp.version`](packaging/yt-dlp.version) -- the one the last release was made with -- it
+writes the new one down with short notes, tags the next patch here (0.31.0 becomes 0.31.1, then 0.31.2), and runs Release
+on that tag with every application repository at the last release's tag, so only the yt-dlp is new. Release builds the
+desktop packages with the latest yt-dlp inside, retries the runners' own failures twice, and publishes it with those notes,
+so every Noctorium's updater, the installers and Obtainium offer it at once.
+
+It waits while a draft release is open, and can be run by hand from the Actions tab, with *Only say what would be
+released* to see what it would do.
+
 ## Updating
 
 Noctorium asks GitHub for `/releases/latest` of this repository once at launch and offers what it finds.

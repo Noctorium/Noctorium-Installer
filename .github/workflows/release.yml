@@ -64,6 +64,11 @@ on:
         description: 'Noctorium-song-find-mobile-dart branch, tag or commit to build'
         required: false
         default: 'main'
+      publish:
+        description: 'Publish it once built, with notes/<version>.md, rather than leaving a draft (run on a tag)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -489,3 +494,19 @@ jobs:
             for Noctorium Stats or `^Noctorium-Song-Find-.*\.apk$` for Noctorium Song Find.
 
             `SHA256SUMS.txt` lists the checksum of every file above.
+
+      # Published straight away when the yt-dlp workflow asked for this release (see yt-dlp.yml), with the notes it
+      # wrote; a release made by hand stays a draft for a person to read over first.
+      - uses: actions/checkout@v4
+        if: inputs.publish
+        with:
+          path: installer
+          ref: ${{ github.ref }}
+      - name: Publish it
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="installer/notes/${GITHUB_REF_NAME#v}.md"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file "$notes"

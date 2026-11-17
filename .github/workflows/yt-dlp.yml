@@ -1,0 +1,143 @@
+name: New yt-dlp
+
+# A new Noctorium whenever yt-dlp has a new release: the same code as the last release, with the patch number one
+# up -- 0.31.0 becomes 0.31.1, 0.31.1 becomes 0.31.2 -- and the new yt-dlp inside, published so every Noctorium's
+# updater, the installers and Obtainium offer it at once.
+#
+# yt-dlp is what reads YouTube and SoundCloud on the computer, and they change their pages often enough that a
+# yt-dlp a few weeks old stops playing things. The desktop packages carry yt-dlp, fetched as the latest when they are
+# built, so a release made the day yt-dlp has one is how a fixed yt-dlp reaches everyone.
+#
+# packaging/yt-dlp.version is the yt-dlp the last release was made with. Once a day this asks yt-dlp's releases for
+# the newest; when it is newer, it writes the new one down with short notes, tags the next patch here, and runs
+# Release on that tag with every application repository at the last release's tag, so nothing that was not released
+# goes out with it. Release's jobs are retried twice for the runners' own failures before this gives up.
+#
+# Every step is GitHub's own token: a workflow_dispatch is the one kind of run that token may start.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only say what would be released'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: new-yt-dlp
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release with the new yt-dlp
+    runs-on: ubuntu-latest
+    # The release takes an hour or so; the rest is waiting on it, and retrying it twice.
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Is there a new yt-dlp?
+        id: check
+        run: |
+          set -euo pipefail
+          newest=$(gh api repos/yt-dlp/yt-dlp/releases/latest --jq .tag_name)
+          shipped=$(tr -d '[:space:]' < packaging/yt-dlp.version)
+          echo "yt-dlp: newest $newest, last shipped $shipped"
+          # yt-dlp's versions are dates, so the newer one is the greater, compared as text.
+          if [ -z "$newest" ] || [[ ! "$newest" > "$shipped" ]]; then
+            echo "Nothing new."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A release still being built, or a draft waiting for someone, is left to finish first.
+          if gh release list --limit 5 --json isDraft --jq '.[] | select(.isDraft)' | grep -q .; then
+            echo "::warning::A draft release is waiting; yt-dlp $newest goes out with the next run after it."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last=$(gh release view --json tagName --jq .tagName)
+          IFS=. read -r major minor patch <<< "${last#v}"
+          next="$major.$minor.$((patch + 1))"
+          if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
+            echo "::error::v$next is already a tag here, without a release."
+            exit 1
+          fi
+          echo "Releasing $next, from $last's code, with yt-dlp $newest."
+          {
+            echo "new=true"
+            echo "newest=$newest"
+            echo "last=$last"
+            echo "next=$next"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write it down, and tag it
+        if: steps.check.outputs.new == 'true' && !inputs.dry_run
+        env:
+          NEWEST: ${{ steps.check.outputs.newest }}
+          LAST: ${{ steps.check.outputs.last }}
+          NEXT: ${{ steps.check.outputs.next }}
+        run: |
+          set -euo pipefail
+          echo "$NEWEST" > packaging/yt-dlp.version
+          cat > "notes/$NEXT.md" <<EOF
+          A new yt-dlp, and nothing else: Noctorium $NEXT is ${LAST#v} with [yt-dlp $NEWEST](https://github.com/yt-dlp/yt-dlp/releases/tag/$NEWEST).
+
+          ## Worth knowing
+
+          - yt-dlp is what Noctorium on the computer reads YouTube, YouTube Music and SoundCloud with. They change their
+            pages often, and a newer yt-dlp is what keeps them playing.
+          - This release was made by itself, the day yt-dlp released: every Noctorium is the same as in ${LAST#v}, numbered
+            $NEXT.
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/yt-dlp.version "notes/$NEXT.md"
+          git commit -m "Noctorium $NEXT: yt-dlp $NEWEST"
+          git push origin HEAD:main
+          git tag -a "v$NEXT" -m "Noctorium $NEXT"
+          git push origin "v$NEXT"
+
+      - name: Build and publish it
+        if: steps.check.outputs.new == 'true' && !inputs.dry_run
+        env:
+          LAST: ${{ steps.check.outputs.last }}
+          NEXT: ${{ steps.check.outputs.next }}
+        run: |
+          set -euo pipefail
+          started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run release.yml --ref "v$NEXT" \
+            -f version="$NEXT" -f publish=true \
+            -f desktop_ref="$LAST" -f mobile_ref="$LAST" -f cli_ref="$LAST" \
+            -f stats_desktop_ref="$LAST" -f stats_mobile_ref="$LAST" -f rust_ref="$LAST" \
+            -f song_find_desktop_ref="$LAST" -f song_find_mobile_ref="$LAST"
+          # The run it started: the newest of Release's runs on that tag since a moment ago.
+          run=""
+          for _ in $(seq 1 30); do
+            run=$(gh run list --workflow release.yml --branch "v$NEXT" --created ">=$started" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            [ -n "$run" ] && break
+            sleep 10
+          done
+          [ -n "$run" ] || { echo "::error::Release never started for v$NEXT."; exit 1; }
+          echo "Release run: $run"
+          # The runners lose a job now and then -- a broken download, a Mac that stops answering -- so a failed run
+          # is retried twice, its failed jobs only, before anyone has to look.
+          for attempt in 1 2 3; do
+            until [ "$(gh run view "$run" --json status --jq .status 2>/dev/null)" = "completed" ]; do sleep 60; done
+            conclusion=$(gh run view "$run" --json conclusion --jq .conclusion)
+            echo "Attempt $attempt: $conclusion"
+            [ "$conclusion" = "success" ] && break
+            [ "$attempt" -lt 3 ] || { echo "::error::Release v$NEXT failed three times: see run $run."; exit 1; }
+            gh run rerun "$run" --failed
+            sleep 30
+          done
+          gh release view "v$NEXT" --json isDraft,assets --jq '"Published: draft=\(.isDraft), \(.assets | length) files"'
