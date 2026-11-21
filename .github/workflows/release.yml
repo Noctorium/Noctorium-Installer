@@ -72,6 +72,8 @@ on:
 
 permissions:
   contents: write
+  # To start winget.yml once a release publishes itself.
+  actions: write
 
 env:
   # The tag drives the version everywhere: the installers, the APK's versionName, and the release itself.
@@ -510,3 +512,11 @@ jobs:
           set -euo pipefail
           notes="installer/notes/${GITHUB_REF_NAME#v}.md"
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file "$notes"
+
+      # Offered on winget too. A release published with GitHub's own token starts no other workflow by itself, so
+      # winget.yml is asked for by name; one published by hand starts it through its release event instead.
+      - name: Offer it on winget
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run winget.yml --repo "$GITHUB_REPOSITORY" --ref main -f version="${GITHUB_REF_NAME#v}"

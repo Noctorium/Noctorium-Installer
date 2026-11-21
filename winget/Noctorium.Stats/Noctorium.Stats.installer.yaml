@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
+
+PackageIdentifier: Noctorium.Stats
+PackageVersion: ${VERSION}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+- RelativeFilePath: 'Noctorium Stats.exe'
+  PortableCommandAlias: noctorium-stats
+Commands:
+- noctorium-stats
+ReleaseDate: ${DATE}
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/Noctorium/Noctorium-Installer/releases/download/v${VERSION}/noctorium-stats-${VERSION}-windows-x64.zip
+  InstallerSha256: ${SHA256}
+ManifestType: installer
+ManifestVersion: 1.28.0

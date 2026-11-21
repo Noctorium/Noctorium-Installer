@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
+
+PackageIdentifier: Noctorium.Rust
+PackageVersion: ${VERSION}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+- RelativeFilePath: 'Noctorium Rust.exe'
+  PortableCommandAlias: noctorium-rust
+Commands:
+- noctorium-rust
+ReleaseDate: ${DATE}
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/Noctorium/Noctorium-Installer/releases/download/v${VERSION}/noctorium-rust-${VERSION}-windows-x64.zip
+  InstallerSha256: ${SHA256}
+ManifestType: installer
+ManifestVersion: 1.28.0
