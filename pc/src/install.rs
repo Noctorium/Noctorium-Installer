@@ -1916,7 +1916,7 @@ pub fn installed_values_of(
         ("QuietUninstallString", Value::Text(uninstall)),
         (
             "URLInfoAbout",
-            Value::Text("https://noctorium.vercel.app".into()),
+            Value::Text("https://noctorium.xyz".into()),
         ),
         ("NoModify", Value::Number(1)),
         ("NoRepair", Value::Number(1)),

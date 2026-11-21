@@ -28,7 +28,7 @@ opens on a TV as well.
 On Android, every app here also works with [Obtainium](https://github.com/ImranR98/Obtainium): add this
 repository as the source and set *Filter APKs by regular expression* to `^Noctorium-[0-9].*[.]apk$`,
 `^Noctorium-Stats-[0-9].*[.]apk$` or `^Noctorium-Song-Find-[0-9].*[.]apk$`. The
-[website](https://noctorium.vercel.app/#obtainium) and the organisation's page have a button for each that
+[website](https://noctorium.xyz/#obtainium) and the organisation's page have a button for each that
 sets this up in one tap.
 
 Every release also carries **Noctorium Stats**, which signs in to your Noctorium account and shows what you
@@ -53,35 +53,35 @@ against `SHA256SUMS.txt`, and runs it — and the installer says what it found a
 anything.
 
 ```powershell
-irm https://noctorium.vercel.app/install | iex                # Windows, in PowerShell
+irm https://noctorium.xyz/install | iex                # Windows, in PowerShell
 ```
 
 ```bash
-curl -fsSL https://noctorium.vercel.app/install | sh          # Linux and macOS, in a terminal
+curl -fsSL https://noctorium.xyz/install | sh          # Linux and macOS, in a terminal
 ```
 
 Options for the installer, [listed below](#the-terminal-installer), go after either. `iex` has no way to
 pass any on, so on Windows the line becomes a script block:
 
 ```powershell
-& ([scriptblock]::Create((irm https://noctorium.vercel.app/install))) --product cli --yes
+& ([scriptblock]::Create((irm https://noctorium.xyz/install))) --product cli --yes
 ```
 
 ```bash
-curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product cli --yes
+curl -fsSL https://noctorium.xyz/install | sh -s -- --product cli --yes
 ```
 
 `NOCTORIUM_PRODUCT` says what `--product` would, which is the way to tell `iex`:
 
 ```powershell
-$env:NOCTORIUM_PRODUCT = 'desktop,stats'; irm https://noctorium.vercel.app/install | iex
+$env:NOCTORIUM_PRODUCT = 'desktop,stats'; irm https://noctorium.xyz/install | iex
 ```
 
 ```bash
-curl -fsSL https://noctorium.vercel.app/install | NOCTORIUM_PRODUCT=stats sh
+curl -fsSL https://noctorium.xyz/install | NOCTORIUM_PRODUCT=stats sh
 ```
 
-If noctorium.vercel.app is ever down, the same scripts come straight from this repository:
+If noctorium.xyz is ever down, the same scripts come straight from this repository:
 
 ```powershell
 irm https://raw.githubusercontent.com/Noctorium/Noctorium-Installer/main/scripts/install.ps1 | iex

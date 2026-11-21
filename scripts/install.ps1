@@ -1,10 +1,10 @@
 # Installs Noctorium on Windows, from PowerShell:
 #
-#   irm https://noctorium.vercel.app/install | iex
+#   irm https://noctorium.xyz/install | iex
 #
 # iex has no way to pass options on, so with options it is run as a script block instead:
 #
-#   & ([scriptblock]::Create((irm https://noctorium.vercel.app/install))) --product cli --yes
+#   & ([scriptblock]::Create((irm https://noctorium.xyz/install))) --product cli --yes
 #
 # It fetches the terminal installer, noctorium-installer-cli-windows-x64.exe, from the latest release,
 # checks it against the SHA256SUMS.txt published beside it, and runs it with those options. The installer
@@ -15,7 +15,7 @@
 # --product desktop, cli, stats, rust, song-find, both (Noctorium and the CLI) or all, or several joined by commas, such as
 # desktop,stats. NOCTORIUM_PRODUCT says the same, and is how iex is given it:
 #
-#   $env:NOCTORIUM_PRODUCT = 'stats'; irm https://noctorium.vercel.app/install | iex
+#   $env:NOCTORIUM_PRODUCT = 'stats'; irm https://noctorium.xyz/install | iex
 #
 # Noctorium Stats is new, and a release from before it has none, nor an installer that knows its name. So
 # when Stats is asked for, this looks in SHA256SUMS.txt first: if the release has no Stats for Windows, it
@@ -136,9 +136,9 @@
     # own one line, the same one.
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         if (Get-Variable -Name IsMacOS -ValueOnly -ErrorAction SilentlyContinue) {
-            Fail 'This is the installer for Windows. On a Mac, in Terminal: curl -fsSL https://noctorium.vercel.app/install | sh'
+            Fail 'This is the installer for Windows. On a Mac, in Terminal: curl -fsSL https://noctorium.xyz/install | sh'
         } else {
-            Fail 'This is the installer for Windows. On Linux, in a terminal: curl -fsSL https://noctorium.vercel.app/install | sh'
+            Fail 'This is the installer for Windows. On Linux, in a terminal: curl -fsSL https://noctorium.xyz/install | sh'
         }
         return
     }

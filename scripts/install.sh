@@ -1,11 +1,11 @@
 #!/bin/sh
 # Installs Noctorium on Linux or a Mac, from a terminal:
 #
-#   curl -fsSL https://noctorium.vercel.app/install | sh
+#   curl -fsSL https://noctorium.xyz/install | sh
 #
 # and with options, which go after sh -s --:
 #
-#   curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product cli --yes
+#   curl -fsSL https://noctorium.xyz/install | sh -s -- --product cli --yes
 #
 # It fetches the terminal installer from the latest release -- noctorium-installer-cli-linux-x64 on Linux,
 # noctorium-installer-cli-macos on a Mac, one file for Apple silicon and Intel alike -- checks it against
@@ -18,7 +18,7 @@
 # --product desktop, cli, stats, rust, song-find, both (Noctorium and the CLI) or all, or several joined by commas, such as
 # desktop,stats. NOCTORIUM_PRODUCT in the environment says the same, for when options are awkward:
 #
-#   curl -fsSL https://noctorium.vercel.app/install | NOCTORIUM_PRODUCT=stats sh
+#   curl -fsSL https://noctorium.xyz/install | NOCTORIUM_PRODUCT=stats sh
 #
 # Noctorium Stats is new, and a release from before it has none, nor an installer that knows its name. So
 # when Stats is asked for, this looks in SHA256SUMS.txt first: if the release has no Stats for this
@@ -50,7 +50,7 @@ main() {
             # Mac anyway. Which Noctorium the Mac gets is the installer's to work out, from the kernel.
             asset=noctorium-installer-cli-macos ;;
         MINGW* | MSYS* | CYGWIN*)
-            fail "This is the installer for Linux and macOS. On Windows, in PowerShell: irm https://noctorium.vercel.app/install | iex"
+            fail "This is the installer for Linux and macOS. On Windows, in PowerShell: irm https://noctorium.xyz/install | iex"
             return 1 ;;
         *)
             fail "Noctorium is built for Linux, macOS and Windows, and this is $system."

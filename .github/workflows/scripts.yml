@@ -1,7 +1,7 @@
 name: Install scripts
 
-# The one-line installers in scripts/: install.ps1 for `irm https://noctorium.vercel.app/install | iex` in
-# PowerShell, and install.sh for `curl -fsSL https://noctorium.vercel.app/install | sh`. Each is run here
+# The one-line installers in scripts/: install.ps1 for `irm https://noctorium.xyz/install | iex` in
+# PowerShell, and install.sh for `curl -fsSL https://noctorium.xyz/install | sh`. Each is run here
 # the way it is run there, against the real latest release, as far as a dry run goes: the terminal
 # installer fetched, checked against SHA256SUMS.txt, and asked what it would do. Nothing is installed on
 # the runners.

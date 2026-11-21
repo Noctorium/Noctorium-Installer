@@ -566,7 +566,7 @@ jobs:
             Noctorium is not signed with an Apple developer identity, so macOS asks once before opening a
             copy downloaded in a browser: if it says it cannot check it, open System Settings, Privacy &
             Security, and choose Open Anyway. The one-line installer, `curl -fsSL
-            https://noctorium.vercel.app/install | sh`, installs it without that question.
+            https://noctorium.xyz/install | sh`, installs it without that question.
 
             On Android, [Obtainium](https://github.com/ImranR98/Obtainium) can keep each app up to date
             from this repository, `https://github.com/Noctorium/Noctorium-Installer`, with *Filter APKs by
