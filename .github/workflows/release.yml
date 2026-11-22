@@ -488,9 +488,10 @@ jobs:
           # Stats' five; and Noctorium Rust's four. Counted, because a job that uploaded nothing under a
           # name nobody expected would otherwise make a release that is quietly short of something.
           count=$(find release -type f | wc -l)
-          # And Noctorium Song Find's five make thirty-five, and Noctorium Lite's APK and the iOS .ipa thirty-seven.
-          if [ "$count" -ne 37 ]; then
-            echo "::error::Expected 37 files before the checksums, and there are $count."
+          # And Noctorium Song Find's five make thirty-five, and Noctorium Lite's APK and the iOS .ipa thirty-seven;
+          # since 0.38.0 the TV's and the car's APKs beside the phone's, thirty-nine.
+          if [ "$count" -ne 39 ]; then
+            echo "::error::Expected 39 files before the checksums, and there are $count."
             exit 1
           fi
           # And Noctorium Stats' by name, since the installers find them by name.
