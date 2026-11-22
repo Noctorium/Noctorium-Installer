@@ -31,7 +31,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.37.0'
+        default: '0.38.0'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
@@ -228,19 +228,24 @@ jobs:
       - name: Check it is actually signed
         run: |
           set -euo pipefail
-          apk=$(ls build/outputs/apk/release/*.apk)
           # One version, chosen. The runner carries several build-tools and the bare glob hands the second
           # path to the first as if it were a command, which apksigner rejects with a message about the
           # first one -- confusing enough to send you looking in the wrong place.
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
-          "$apksigner" verify --print-certs "$apk"
+          # Three APKs since 0.38.0: the phone (with Android Auto), the TV and the car. Every one is checked.
+          for device in phone tv car; do
+            apk=$(ls build/outputs/apk/$device/release/*.apk)
+            "$apksigner" verify --print-certs "$apk"
+          done
 
       - name: Name the file after the version
         run: |
           set -euo pipefail
           version="${APP_VERSION#v}"
           mkdir -p out
-          cp build/outputs/apk/release/*.apk "out/Noctorium-${version}.apk"
+          cp build/outputs/apk/phone/release/*.apk "out/Noctorium-${version}.apk"
+          cp build/outputs/apk/tv/release/*.apk "out/Noctorium-TV-${version}.apk"
+          cp build/outputs/apk/car/release/*.apk "out/Noctorium-Car-${version}.apk"
           ls -la out
 
       - uses: actions/upload-artifact@v4
@@ -535,7 +540,9 @@ jobs:
             | Any Linux with Flatpak | `Noctorium-*-x86_64.flatpak`: `flatpak install --user --bundle` |
             | macOS, Apple silicon | `Noctorium-*-macos-arm64.dmg`: open it and drag Noctorium into Applications |
             | macOS, Intel | `Noctorium-*-macos-x64.dmg` |
-            | Android, Android Auto and Android TV | `Noctorium-*.apk`, one APK for the phone, the car and the TV -- not `Noctorium-Stats-*.apk` or `Noctorium-Song-Find-*.apk`, which are Noctorium Stats and Noctorium Song Find |
+            | Android phones, with Android Auto | `Noctorium-*.apk` (the one with only a version in its name) |
+            | Android TV | `Noctorium-TV-*.apk` |
+            | Cars with Google built in (Android Automotive) | `Noctorium-Car-*.apk` |
             | Noctorium Lite: a very small Android app, for any phone from Android 5 | `Noctorium-Lite-*.apk` |
             | iPhone and iPad | `Noctorium-*-ios.ipa`, unsigned: install it with AltStore or SideStore |
             | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, `noctorium-cli-*-macos-arm64.tar.gz`, `noctorium-cli-*-macos-x64.tar.gz` |
@@ -551,7 +558,7 @@ jobs:
             | Windows | `Noctorium-Installer-windows-x64.exe` | `noctorium-installer-cli-windows-x64.exe` |
             | Linux | `Noctorium-Installer-x86_64.AppImage`, or `noctorium-installer-linux-x64` | `noctorium-installer-cli-linux-x64` |
             | macOS | the disk image is the installer | `noctorium-installer-cli-macos`, for Apple silicon and Intel |
-            | Android, phones and TVs | `Noctorium-Installer-android.apk` | |
+            | Android, phones, TVs and cars | `Noctorium-Installer-android.apk` | |
 
             The installers offer Noctorium, the Noctorium CLI, Noctorium Stats, Noctorium Rust and Noctorium Song Find, any or all of them. The
             terminal installer asks which and which format, or takes `--product`, `--yes` and the

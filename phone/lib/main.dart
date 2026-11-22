@@ -36,6 +36,8 @@ typedef ReleaseLookup = Future<Release> Function();
 /// What this installs.
 enum Product {
   noctorium('Noctorium'),
+  tv('Noctorium for TV'),
+  car('Noctorium for cars'),
   stats('Noctorium Stats'),
   songFind('Noctorium Song Find');
 
@@ -46,6 +48,8 @@ enum Product {
   /// Its APK in [release], or null when the release carries none.
   Asset? apkIn(Release release) => switch (this) {
         Product.noctorium => release.apk,
+        Product.tv => release.tvApk,
+        Product.car => release.carApk,
         Product.stats => release.statsApk,
         Product.songFind => release.songFindApk,
       };
@@ -315,10 +319,12 @@ class _InstallerScreenState extends State<InstallerScreen> {
     final quiet = TextStyle(color: scheme.onSurfaceVariant, height: 1.4);
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+        // Centred when it fits, and scrolled when it does not: a TV's landscape screen is shorter than the buttons.
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(28),
+            child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text('Noctorium', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold)),
@@ -342,6 +348,25 @@ class _InstallerScreenState extends State<InstallerScreen> {
               FilledButton(
                 onPressed: _busy ? null : () => _install(Product.noctorium),
                 child: Text(_label(Product.noctorium)),
+              ),
+              const SizedBox(height: 12),
+              // The same Noctorium, built for a television or for a car with Google built in: one each, from 0.38.0.
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _busy ? null : () => _install(Product.tv),
+                      child: const Text('For a TV'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _busy ? null : () => _install(Product.car),
+                      child: const Text('For a car'),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 24),
               // Its own app, beside the player rather than part of it, so its own button -- offered only
@@ -370,6 +395,7 @@ class _InstallerScreenState extends State<InstallerScreen> {
                 child: Text(_label(Product.songFind)),
               ),
             ],
+            ),
           ),
         ),
       ),

@@ -43,6 +43,22 @@ void main() {
     expect(release.apk?.name, 'Noctorium-1.0.0.apk');
   });
 
+  test('the phone, the TV and the car each have their own APK, from 0.38.0', () {
+    final release = Release.fromJson('''
+    {
+      "tag_name": "v0.38.0",
+      "assets": [
+        {"name": "Noctorium-Car-0.38.0.apk", "browser_download_url": "u", "size": 1},
+        {"name": "Noctorium-TV-0.38.0.apk", "browser_download_url": "u", "size": 1},
+        {"name": "Noctorium-0.38.0.apk", "browser_download_url": "u", "size": 1}
+      ]
+    }
+    ''');
+    expect(release.apk?.name, 'Noctorium-0.38.0.apk');
+    expect(release.tvApk?.name, 'Noctorium-TV-0.38.0.apk');
+    expect(release.carApk?.name, 'Noctorium-Car-0.38.0.apk');
+  });
+
   // A release from 0.13 on: Noctorium's APK, Noctorium Stats' and the installer's own, listed in an order
   // that puts Stats first -- which GitHub does not do today, sorting by name, and need never promise.
   const withStats = '''

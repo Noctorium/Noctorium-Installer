@@ -55,6 +55,13 @@ class Release {
   /// happens to be Noctorium's today, because GitHub lists them by name; nothing promises it will.
   Asset? get apk => _first(_noctorium);
 
+  /// Noctorium for TV, `Noctorium-TV-<version>.apk`: in every release from 0.38.0, when the phone, the TV and the
+  /// car got an APK each.
+  Asset? get tvApk => _first(_tv);
+
+  /// Noctorium for cars with Google built in (Android Automotive), `Noctorium-Car-<version>.apk`, from 0.38.0.
+  Asset? get carApk => _first(_car);
+
   /// Noctorium Stats' APK, `Noctorium-Stats-<version>.apk`, or null when the release carries none --
   /// which every release before Stats does not.
   Asset? get statsApk => _first(_stats);
@@ -66,6 +73,8 @@ class Release {
   /// A version starts with a digit, which is what keeps `Noctorium-Stats-...` and
   /// `Noctorium-Installer-...` from answering for `Noctorium-<version>`.
   static final RegExp _noctorium = RegExp(r'^noctorium-\d[^/]*\.apk$', caseSensitive: false);
+  static final RegExp _tv = RegExp(r'^noctorium-tv-\d[^/]*\.apk$', caseSensitive: false);
+  static final RegExp _car = RegExp(r'^noctorium-car-\d[^/]*\.apk$', caseSensitive: false);
   static final RegExp _stats = RegExp(r'^noctorium-stats-\d[^/]*\.apk$', caseSensitive: false);
   static final RegExp _songFind = RegExp(r'^noctorium-song-find-\d[^/]*\.apk$', caseSensitive: false);
 
