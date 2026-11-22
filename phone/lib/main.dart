@@ -350,7 +350,7 @@ class _InstallerScreenState extends State<InstallerScreen> {
                 child: Text(_label(Product.noctorium)),
               ),
               const SizedBox(height: 12),
-              // The same Noctorium, built for a television or for a car with Google built in: one each, from 0.38.0.
+              // The same Noctorium, built for a television or for a car with Google built in: one each, from 0.38.1.
               Row(
                 children: [
                   Expanded(

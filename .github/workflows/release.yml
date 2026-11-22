@@ -31,7 +31,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.38.0'
+        default: '0.38.1'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
@@ -232,7 +232,7 @@ jobs:
           # path to the first as if it were a command, which apksigner rejects with a message about the
           # first one -- confusing enough to send you looking in the wrong place.
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
-          # Three APKs since 0.38.0: the phone (with Android Auto), the TV and the car. Every one is checked.
+          # Three APKs since 0.38.1: the phone (with Android Auto), the TV and the car. Every one is checked.
           for device in phone tv car; do
             apk=$(ls build/outputs/apk/$device/release/*.apk)
             "$apksigner" verify --print-certs "$apk"
@@ -489,7 +489,7 @@ jobs:
           # name nobody expected would otherwise make a release that is quietly short of something.
           count=$(find release -type f | wc -l)
           # And Noctorium Song Find's five make thirty-five, and Noctorium Lite's APK and the iOS .ipa thirty-seven;
-          # since 0.38.0 the TV's and the car's APKs beside the phone's, thirty-nine.
+          # since 0.38.1 the TV's and the car's APKs beside the phone's, thirty-nine.
           if [ "$count" -ne 39 ]; then
             echo "::error::Expected 39 files before the checksums, and there are $count."
             exit 1

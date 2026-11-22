@@ -1,7 +1,7 @@
 name: noctorium_installer
 description: Fetches the latest Noctorium, Noctorium Stats or Noctorium Song Find from GitHub and hands it to Android's installer.
 publish_to: none
-version: 0.38.0+3800
+version: 0.38.1+3801
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

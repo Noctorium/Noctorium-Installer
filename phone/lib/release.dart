@@ -55,11 +55,11 @@ class Release {
   /// happens to be Noctorium's today, because GitHub lists them by name; nothing promises it will.
   Asset? get apk => _first(_noctorium);
 
-  /// Noctorium for TV, `Noctorium-TV-<version>.apk`: in every release from 0.38.0, when the phone, the TV and the
+  /// Noctorium for TV, `Noctorium-TV-<version>.apk`: in every release from 0.38.1, when the phone, the TV and the
   /// car got an APK each.
   Asset? get tvApk => _first(_tv);
 
-  /// Noctorium for cars with Google built in (Android Automotive), `Noctorium-Car-<version>.apk`, from 0.38.0.
+  /// Noctorium for cars with Google built in (Android Automotive), `Noctorium-Car-<version>.apk`, from 0.38.1.
   Asset? get carApk => _first(_car);
 
   /// Noctorium Stats' APK, `Noctorium-Stats-<version>.apk`, or null when the release carries none --
