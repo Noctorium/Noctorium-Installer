@@ -31,7 +31,7 @@ on:
       version:
         description: 'Version to build, without the leading v (e.g. 1.2.3)'
         required: true
-        default: '0.42.3'
+        default: '0.43.0'
       desktop_ref:
         description: 'Noctorium-Desktop branch, tag or commit to build'
         required: false
@@ -432,6 +432,17 @@ jobs:
     # The Android signing key, which a called workflow is not given unless it is passed on.
     secrets: inherit
 
+  # Noctorium Account, from noctorium-account-client-desktop-rust and noctorium-account-client-mobile-dart at
+  # the same tag, built and checked as Noctorium Stats' are: four archives and an APK. See account.yml.
+  account:
+    name: Noctorium Account
+    uses: ./.github/workflows/account.yml
+    with:
+      version: ${{ inputs.version || github.ref_name }}
+      desktop_ref: ${{ github.ref_name }}
+      mobile_ref: ${{ github.ref_name }}
+    secrets: inherit
+
   # Noctorium Rust, from Noctorium-Desktop-Rust at the same tag: an archive for Windows, Linux and each kind
   # of Mac, built and checked as Noctorium Stats' are. See rust.yml.
   rust:
@@ -460,7 +471,7 @@ jobs:
     # which has to succeed. pc-installer is both systems' window and terminal installers, and stats is all
     # five files of Noctorium Stats, rust the four of Noctorium Rust, and song-find the five of Noctorium
     # Song Find.
-    needs: [windows, linux, macos, android, lite, ios, cli, pc-installer, phone-installer, stats, rust, song-find]
+    needs: [windows, linux, macos, android, lite, ios, cli, pc-installer, phone-installer, stats, account, rust, song-find]
     runs-on: ubuntu-latest
     # A manual run builds and keeps the artifacts; only a tag publishes a release.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -489,9 +500,10 @@ jobs:
           # name nobody expected would otherwise make a release that is quietly short of something.
           count=$(find release -type f | wc -l)
           # And Noctorium Song Find's five make thirty-five, and Noctorium Lite's APK and the iOS .ipa thirty-seven;
-          # since 0.38.1 the TV's and the car's APKs beside the phone's, thirty-nine.
-          if [ "$count" -ne 39 ]; then
-            echo "::error::Expected 39 files before the checksums, and there are $count."
+          # since 0.38.1 the TV's and the car's APKs beside the phone's, thirty-nine; since 0.43.0 Noctorium
+          # Account's five, forty-four.
+          if [ "$count" -ne 44 ]; then
+            echo "::error::Expected 44 files before the checksums, and there are $count."
             exit 1
           fi
           # And Noctorium Stats' by name, since the installers find them by name.
@@ -548,6 +560,7 @@ jobs:
             | iPhone and iPad | `Noctorium-*-ios.ipa`, unsigned: install it with AltStore or SideStore |
             | Noctorium CLI: the player in a terminal, and `noctorium web` for the browsers in the house | `noctorium-cli-*-windows-x64.zip`, `noctorium-cli-*-linux-x64.tar.gz`, `noctorium-cli-*-macos-arm64.tar.gz`, `noctorium-cli-*-macos-x64.tar.gz` |
             | Noctorium Stats: your listening, in figures, from your Noctorium account | `noctorium-stats-*-windows-x64.zip`, `noctorium-stats-*-linux-x64.tar.gz`, `noctorium-stats-*-macos-arm64.zip`, `noctorium-stats-*-macos-x64.zip`, and for Android `Noctorium-Stats-*.apk` |
+            | Noctorium Account: your Noctorium account -- picture, name, email, password, two-step and scrobbling -- without a browser | `noctorium-account-*-windows-x64.zip`, `noctorium-account-*-linux-x64.tar.gz`, `noctorium-account-*-macos-arm64.zip`, `noctorium-account-*-macos-x64.zip`, and for Android `Noctorium-Account-*.apk` |
             | Noctorium Rust: the same player written in Rust, one native program | `noctorium-rust-*-windows-x64.zip`, `noctorium-rust-*-linux-x64.tar.gz`, `noctorium-rust-*-macos-arm64.zip`, `noctorium-rust-*-macos-x64.zip` |
             | Noctorium Song Find: which song is playing, from the microphone or the computer's own sound | `noctorium-song-find-*-windows-x64.zip`, `noctorium-song-find-*-linux-x64.tar.gz`, `noctorium-song-find-*-macos-arm64.zip`, `noctorium-song-find-*-macos-x64.zip`, and for Android `Noctorium-Song-Find-*.apk` |
 
